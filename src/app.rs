@@ -1,9 +1,27 @@
-use relm4::adw::prelude::*;
-use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, adw, component, gtk};
+use relm4::gtk::prelude::*;
+use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, component, gtk};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::core::{CommandParser, EditorAction, EditorMode, KeyModifiers, NoteBuffer, NotesDirectory, NoteFile, MarkdownParser, StyleType, NotesConfig};
+use gtk::{gdk, CssProvider, style_context_add_provider_for_display, STYLE_PROVIDER_PRIORITY_APPLICATION};
+
+#[derive(Debug, Clone)]
+struct ThemeColors {
+    link_color: gtk::gdk::RGBA,
+    code_bg: gtk::gdk::RGBA,
+}
+
+impl Default for ThemeColors {
+    fn default() -> Self {
+        Self {
+            // Azul claro por defecto para links
+            link_color: gtk::gdk::RGBA::new(0.4, 0.7, 1.0, 1.0),
+            // Gris sutil para fondos de código
+            code_bg: gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 0.1),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct LinkSpan {
@@ -49,7 +67,7 @@ pub struct MainApp {
     context_item_name: Rc<RefCell<String>>,
     context_is_folder: Rc<RefCell<bool>>,
     renaming_item: Rc<RefCell<Option<(String, bool)>>>, // (nombre, es_carpeta)
-    main_window: adw::ApplicationWindow,
+    main_window: gtk::ApplicationWindow,
     link_spans: Rc<RefCell<Vec<LinkSpan>>>,
 }
 
@@ -58,6 +76,7 @@ pub enum AppMsg {
     ToggleTheme,
     #[allow(dead_code)]
     SetTheme(ThemePreference),
+    RefreshTheme, // Nuevo: actualizar cuando el tema del sistema cambia
     Toggle8BitMode,
     ToggleSidebar,
     OpenSidebarAndFocus,
@@ -87,7 +106,7 @@ impl SimpleComponent for MainApp {
     type Init = ThemePreference;
 
     view! {
-        main_window = adw::ApplicationWindow {
+        main_window = gtk::ApplicationWindow {
             set_title: Some("NotNative"),
             set_default_width: 920,
             set_default_height: 680,
@@ -95,11 +114,11 @@ impl SimpleComponent for MainApp {
             add_css_class: "compact",
 
             #[wrap(Some)]
-            set_content = &gtk::Box {
+            set_child = &gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_spacing: 0,
 
-                append = header_bar = &adw::HeaderBar {
+                append = header_bar = &gtk::HeaderBar {
                     pack_start = &gtk::Button {
                         set_icon_name: "view-list-symbolic",
                         set_tooltip_text: Some("Mostrar/ocultar lista de notas"),
@@ -245,7 +264,6 @@ impl SimpleComponent for MainApp {
                                         set_child = &gtk::Box {
                                             set_orientation: gtk::Orientation::Vertical,
                                             set_spacing: 0,
-                                            set_margin_all: 6,
                                             
                                             append = &gtk::Button {
                                                 set_label: "Preferencias",
@@ -259,13 +277,9 @@ impl SimpleComponent for MainApp {
                                                 set_halign: gtk::Align::Fill,
                                             },
                                             
-                                            append = &gtk::Separator {
-                                                set_orientation: gtk::Orientation::Horizontal,
-                                                set_margin_top: 4,
-                                                set_margin_bottom: 4,
-                                            },
-                                            
-                                            append = &gtk::Button {
+                            append = &gtk::Separator {
+                                set_orientation: gtk::Orientation::Horizontal,
+                            },                                            append = &gtk::Button {
                                                 set_label: "Acerca de",
                                                 add_css_class: "flat",
                                                 set_halign: gtk::Align::Fill,
@@ -286,8 +300,6 @@ impl SimpleComponent for MainApp {
         _root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let style_manager = adw::StyleManager::default();
-        
         let widgets = view_output!();
         
         let text_buffer = widgets.text_view.buffer();
@@ -372,8 +384,6 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             link_spans: Rc::new(RefCell::new(Vec::new())),
         };
 
-        model.apply_theme(&style_manager);
-        
         // Crear acciones para el menú contextual
         let rename_action = gtk::gio::SimpleAction::new("rename", None);
         rename_action.connect_activate(gtk::glib::clone!(
@@ -412,6 +422,9 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             sender.input(AppMsg::AutoSave);
             gtk::glib::ControlFlow::Continue
         }));
+        
+        // Configurar watcher para cambios de tema
+        Self::setup_theme_watcher(sender.clone());
 
         let action_group = gtk::gio::SimpleActionGroup::new();
         let toggle_action = gtk::gio::SimpleAction::new("toggle-theme", None);
@@ -792,6 +805,17 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 self.theme = theme;
                 self.refresh_style_manager();
             }
+            AppMsg::RefreshTheme => {
+                // Recrear los tags de texto para adaptar colores al nuevo tema
+                self.create_text_tags();
+                
+                // Re-aplicar estilos markdown si está habilitado
+                if self.markdown_enabled {
+                    self.sync_to_view();
+                }
+                
+                println!("Tema actualizado dinámicamente");
+            }
             AppMsg::Toggle8BitMode => {
                 self.bit8_mode = !self.bit8_mode;
                 self.apply_8bit_font();
@@ -1005,6 +1029,95 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 }
 
 impl MainApp {
+    fn setup_theme_watcher(sender: ComponentSender<Self>) {
+        use notify::{Watcher, RecursiveMode, Event};
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
+        let theme_symlink = format!("{}/.config/omarchy/current", home_dir);
+        
+        std::thread::spawn(move || {
+            let (tx, rx) = channel();
+            let mut watcher = match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+                if let Ok(_event) = res {
+                    let _ = tx.send(());
+                }
+            }) {
+                Ok(w) => w,
+                Err(_) => return,
+            };
+            
+            if watcher.watch(std::path::Path::new(&theme_symlink), RecursiveMode::Recursive).is_err() {
+                return;
+            }
+            
+            loop {
+                if rx.recv_timeout(Duration::from_secs(1)).is_ok() {
+                    std::thread::sleep(Duration::from_millis(500)); // Debounce
+                    
+                    // Recargar CSS
+                    let (combined_css, _) = Self::load_theme_css();
+                    
+                    gtk::glib::MainContext::default().invoke(move || {
+                        if let Some(display) = gtk::gdk::Display::default() {
+                            let new_provider = gtk::CssProvider::new();
+                            new_provider.load_from_data(&combined_css);
+                            gtk::style_context_add_provider_for_display(
+                                &display,
+                                &new_provider,
+                                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                            );
+                        }
+                    });
+                    
+                    // Notificar a la app para actualizar colores de TextTags
+                    sender.input(AppMsg::RefreshTheme);
+                }
+            }
+        });
+    }
+    
+    fn load_theme_css() -> (String, bool) {
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
+        let theme_dir = format!("{}/.config/omarchy/current/theme", home_dir);
+        
+        let css_files = vec![
+            format!("{}/walker.css", theme_dir),
+            format!("{}/waybar.css", theme_dir),
+            format!("{}/swayosd.css", theme_dir),
+        ];
+        
+        let mut combined_css = String::new();
+        let mut theme_loaded = false;
+        
+        for css_file in &css_files {
+            if let Ok(content) = std::fs::read_to_string(css_file) {
+                combined_css.push_str(&content);
+                combined_css.push('\n');
+                theme_loaded = true;
+            }
+        }
+        
+        // Cargar el CSS de la aplicación
+        let app_css = if let Ok(exe_path) = std::env::current_exe() {
+            exe_path.parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .map(|p| p.join("assets/style.css"))
+                .and_then(|path| std::fs::read_to_string(&path).ok())
+        } else {
+            None
+        }.or_else(|| std::fs::read_to_string("assets/style.css").ok())
+         .or_else(|| std::fs::read_to_string("./notnative-app/assets/style.css").ok());
+        
+        if let Some(app_css_content) = app_css {
+            combined_css.push_str(&app_css_content);
+        }
+        
+        (combined_css, theme_loaded)
+    }
+    
     fn execute_action(&mut self, action: EditorAction, sender: &ComponentSender<Self>) {
         // Verificar si hay una selección activa
         let selection_bounds = self.text_buffer.selection_bounds();
@@ -1596,7 +1709,7 @@ impl MainApp {
     fn create_text_tags(&self) {
         let tag_table = self.text_buffer.tag_table();
         
-        // Heading 1 - Más grande y en negrita
+        // Heading 1 - Más grande y en negrita (sin forzar colores)
         let h1_tag = gtk::TextTag::new(Some("h1"));
         h1_tag.set_weight(800);
         h1_tag.set_scale(1.8);
@@ -1624,24 +1737,21 @@ impl MainApp {
         italic_tag.set_style(gtk::pango::Style::Italic);
         tag_table.add(&italic_tag);
         
-        // Code inline - fondo gris sutil
+        // Code inline - fondo del tema
         let code_tag = gtk::TextTag::new(Some("code"));
         code_tag.set_family(Some("monospace"));
-        code_tag.set_background_rgba(Some(&gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 0.15)));
         code_tag.set_size_points(10.0);
         tag_table.add(&code_tag);
         
         // Code block
         let codeblock_tag = gtk::TextTag::new(Some("codeblock"));
         codeblock_tag.set_family(Some("monospace"));
-        codeblock_tag.set_background_rgba(Some(&gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 0.15)));
         codeblock_tag.set_left_margin(20);
         codeblock_tag.set_size_points(10.0);
         tag_table.add(&codeblock_tag);
         
-        // Link - azul y subrayado
+        // Link - subrayado, color del tema
         let link_tag = gtk::TextTag::new(Some("link"));
-        link_tag.set_foreground_rgba(Some(&gtk::gdk::RGBA::new(0.2, 0.4, 0.8, 1.0)));
         link_tag.set_underline(gtk::pango::Underline::Single);
         tag_table.add(&link_tag);
         
@@ -1650,12 +1760,103 @@ impl MainApp {
         list_tag.set_left_margin(20);
         tag_table.add(&list_tag);
         
-        // Blockquote - gris, cursiva, borde izquierdo
+        // Blockquote - cursiva y margen
         let blockquote_tag = gtk::TextTag::new(Some("blockquote"));
         blockquote_tag.set_style(gtk::pango::Style::Italic);
-        blockquote_tag.set_foreground_rgba(Some(&gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0)));
         blockquote_tag.set_left_margin(20);
         tag_table.add(&blockquote_tag);
+        
+        // Aplicar colores del tema
+        self.update_text_tag_colors();
+    }
+    
+    fn update_text_tag_colors(&self) {
+        let tag_table = self.text_buffer.tag_table();
+        
+        // Intentar obtener los colores del tema actual
+        // Parseamos el CSS cargado para extraer las variables
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
+        let theme_dir = format!("{}/.config/omarchy/current/theme", home_dir);
+        
+        // Leer walker.css que tiene las variables de color
+        let walker_css_path = format!("{}/walker.css", theme_dir);
+        let theme_colors = if let Ok(content) = std::fs::read_to_string(&walker_css_path) {
+            Self::parse_theme_colors(&content)
+        } else {
+            // Valores por defecto si no se puede leer el tema
+            ThemeColors::default()
+        };
+        
+        // Actualizar el tag de código inline
+        if let Some(code_tag) = tag_table.lookup("code") {
+            code_tag.set_background_rgba(Some(&theme_colors.code_bg));
+        }
+        
+        // Actualizar el tag de bloque de código
+        if let Some(codeblock_tag) = tag_table.lookup("codeblock") {
+            codeblock_tag.set_background_rgba(Some(&theme_colors.code_bg));
+        }
+        
+        // Actualizar el tag de link
+        if let Some(link_tag) = tag_table.lookup("link") {
+            link_tag.set_foreground_rgba(Some(&theme_colors.link_color));
+        }
+    }
+    
+    fn parse_theme_colors(css_content: &str) -> ThemeColors {
+        let mut colors = ThemeColors::default();
+        
+        // Buscar @define-color selected-text #RRGGBB;
+        if let Some(selected_text) = Self::extract_color(css_content, "selected-text") {
+            colors.link_color = selected_text;
+        }
+        
+        // Buscar @define-color border #RRGGBB; para el fondo de código
+        if let Some(border) = Self::extract_color(css_content, "border") {
+            // Usar el color del borde con transparencia para el fondo de código
+            colors.code_bg = gtk::gdk::RGBA::new(
+                border.red(),
+                border.green(),
+                border.blue(),
+                0.15 // Transparencia
+            );
+        }
+        
+        colors
+    }
+    
+    fn extract_color(css_content: &str, var_name: &str) -> Option<gtk::gdk::RGBA> {
+        // Buscar líneas como: @define-color selected-text #7EBAE4;
+        let pattern = format!("@define-color {} ", var_name);
+        
+        for line in css_content.lines() {
+            let line = line.trim();
+            if line.starts_with(&pattern) {
+                // Extraer el valor del color (después del nombre de la variable)
+                if let Some(color_start) = line.find('#') {
+                    let color_str = &line[color_start..];
+                    // Tomar hasta el punto y coma
+                    let color_hex = color_str.split(';').next().unwrap_or("").trim();
+                    
+                    // Parsear color hex #RRGGBB
+                    if color_hex.len() == 7 {
+                        if let (Ok(r), Ok(g), Ok(b)) = (
+                            u8::from_str_radix(&color_hex[1..3], 16),
+                            u8::from_str_radix(&color_hex[3..5], 16),
+                            u8::from_str_radix(&color_hex[5..7], 16),
+                        ) {
+                            return Some(gtk::gdk::RGBA::new(
+                                r as f32 / 255.0,
+                                g as f32 / 255.0,
+                                b as f32 / 255.0,
+                                1.0,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
     
     fn apply_markdown_styles(&self) {
@@ -1731,8 +1932,23 @@ impl MainApp {
     }
 
     fn refresh_style_manager(&self) {
-        let style_manager = adw::StyleManager::default();
-        self.apply_theme(&style_manager);
+        // Ya no necesitamos StyleManager de Adwaita
+        // El tema GTK del sistema se aplica automáticamente
+        
+        // Recrear tags de texto para asegurarnos de que están actualizados
+        let tag_table = self.text_buffer.tag_table();
+        for tag_name in &["h1", "h2", "h3", "bold", "italic", "code", "codeblock", "link", "list", "blockquote"] {
+            if let Some(tag) = tag_table.lookup(tag_name) {
+                tag_table.remove(&tag);
+            }
+        }
+        
+        self.create_text_tags();
+        
+        // Re-aplicar estilos markdown si está habilitado
+        if self.markdown_enabled {
+            self.sync_to_view();
+        }
     }
 
     fn apply_8bit_font(&self) {
@@ -1749,6 +1965,8 @@ impl MainApp {
                     font-size: 13px;
                     line-height: 1.5;
                     letter-spacing: 0px;
+                    background-color: inherit;
+                    color: inherit;
                 }
                 
                 /* Labels del footer más grandes y legibles */
@@ -1782,7 +2000,7 @@ impl MainApp {
         } else {
             // Modo normal - restaurar fuentes por defecto
             let css = r#"
-                /* Restaurar fuentes normales */
+                /* Restaurar fuentes normales - hereda colores del tema */
                 window, label, button, headerbar {
                     font-family: inherit;
                 }
@@ -1792,6 +2010,8 @@ impl MainApp {
                     font-size: 11pt;
                     line-height: 1.5;
                     letter-spacing: 0px;
+                    background-color: inherit;
+                    color: inherit;
                 }
                 
                 .status-bar label {
@@ -1821,18 +2041,6 @@ impl MainApp {
             
             println!("Modo normal restaurado");
         }
-    }
-
-    fn apply_theme(&self, style_manager: &adw::StyleManager) {
-        use ThemePreference::*;
-
-        let scheme = match self.theme {
-            FollowSystem => adw::ColorScheme::Default,
-            Light => adw::ColorScheme::ForceLight,
-            Dark => adw::ColorScheme::ForceDark,
-        };
-
-        style_manager.set_color_scheme(scheme);
     }
     
     fn animate_sidebar(&self, target_position: i32) {
@@ -2186,7 +2394,7 @@ impl MainApp {
     /// Muestra un diálogo modal centrado para crear una nueva nota
     fn show_create_note_dialog(&self, sender: &ComponentSender<Self>) {
         // Crear ventana de diálogo centrada y compacta
-        let dialog = adw::Window::builder()
+        let dialog = gtk::Window::builder()
             .transient_for(&self.main_window)
             .modal(true)
             .default_width(360)
@@ -2201,7 +2409,7 @@ impl MainApp {
             .build();
         
         // Header con título
-        let header = adw::HeaderBar::builder()
+        let header = gtk::HeaderBar::builder()
             .title_widget(&gtk::Label::builder()
                 .label("Nueva nota")
                 .build())
@@ -2257,7 +2465,7 @@ impl MainApp {
         main_box.append(&header);
         main_box.append(&content_box);
         
-        dialog.set_content(Some(&main_box));
+        dialog.set_child(Some(&main_box));
         
         // Conectar botones
         let dialog_clone = dialog.clone();

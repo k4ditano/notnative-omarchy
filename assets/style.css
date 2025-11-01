@@ -1,9 +1,107 @@
-/* Estilos para NotNative */
+/* Estilos para NotNative - Integrado con temas de Omarchy */
+/* Variables disponibles desde el tema:
+   - @background, @foreground (waybar.css)
+   - @base, @text, @selected-text, @border (walker.css)
+   - @background-color, @border-color, @label (swayosd.css)
+*/
 
-/* Sidebar */
+/* Colores base de la ventana */
+window {
+  background-color: @base;
+  color: @text;
+}
+
+/* HeaderBar */
+headerbar {
+  background-color: @base;
+  background-image: none;
+  color: @text;
+  border-bottom: 1px solid @border;
+  padding: 0 12px;
+}
+
+headerbar:backdrop {
+  background-color: @base;
+  background-image: none;
+  color: @text;
+}
+
+headerbar > * {
+  margin: 0 6px;
+}
+
+headerbar label {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+}
+
+headerbar button {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: none;
+  min-height: 24px;
+  padding: 4px 8px;
+  box-shadow: none;
+}
+
+headerbar button:backdrop {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+}
+
+headerbar button:hover {
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
+  border-radius: 4px;
+}
+
+headerbar button:active {
+  background-color: alpha(@selected-text, 0.25);
+  background-image: none;
+}
+
+/* Botones en general */
+button {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: 1px solid alpha(@border, 0.5);
+  border-radius: 4px;
+  padding: 4px 8px;
+  box-shadow: none;
+}
+
+button:hover {
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
+  border-color: @border;
+}
+
+button:active {
+  background-color: alpha(@selected-text, 0.25);
+  background-image: none;
+}
+
+/* Entry (campos de texto) */
+entry {
+  background-color: alpha(@base, 0.8);
+  color: @text;
+  border: 1px solid @border;
+  caret-color: @text;
+}
+
+entry:focus {
+  border-color: @selected-text;
+}
+
+/* Sidebar - estructura y colores del tema */
 .sidebar {
-  background-color: @sidebar_bg_color;
-  border-right: 1px solid alpha(@borders, 0.3);
+  background-color: @base;
+  color: @text;
+  border-right: 1px solid @border;
 }
 
 .sidebar .heading {
@@ -11,25 +109,56 @@
   font-size: 1.1em;
 }
 
-.navigation-sidebar row {
+/* ListBox y sus filas en el sidebar */
+list, listbox {
+  background-color: @base;
+  color: @text;
+}
+
+.navigation-sidebar row,
+list row,
+listbox row {
+  background-color: transparent;
+  color: @text;
   border-radius: 6px;
   margin: 2px 8px;
   padding: 4px;
   transition: background-color 200ms ease;
 }
 
-.navigation-sidebar row:hover {
-  background-color: alpha(@accent_color, 0.08);
+.navigation-sidebar row:hover,
+list row:hover,
+listbox row:hover {
+  background-color: alpha(@selected-text, 0.1);
 }
 
-.navigation-sidebar row:selected {
-  background-color: alpha(@accent_color, 0.15);
+.navigation-sidebar row:selected,
+list row:selected,
+listbox row:selected {
+  background-color: alpha(@selected-text, 0.2);
+  color: @selected-text;
   font-weight: 500;
 }
 
+/* Botón dentro del sidebar */
+.sidebar button {
+  background-color: transparent;
+  color: @text;
+  border: 1px solid alpha(@border, 0.3);
+  min-height: 24px;
+  min-width: 24px;
+  border-radius: 4px;
+}
+
+.sidebar button:hover {
+  background-color: alpha(@selected-text, 0.15);
+  border-color: @border;
+}
+
 .status-bar {
-  background-color: alpha(@window_bg_color, 0.95);
-  border-top: 1px solid alpha(@borders, 0.5);
+  background-color: @base;
+  color: @text;
+  border-top: 1px solid @border;
   padding: 3px 8px;
   font-family: monospace;
   font-size: 0.7em;
@@ -45,15 +174,16 @@
 
 /* Estilo para el TextView principal */
 textview {
+  background-color: @base;
+  color: @text;
   padding: 20px 24px;
   font-family: monospace;
   font-size: 11pt;
-  background-color: @view_bg_color;
 }
 
 textview text {
-  background-color: @view_bg_color;
-  color: @view_fg_color;
+  background-color: @base;
+  color: @text;
 }
 
 /* Margen en la ventana principal */
@@ -61,76 +191,144 @@ textview text {
   padding: 0;
 }
 
-/* Espaciado en el header */
-headerbar {
-  padding: 0 12px;
-}
-
-headerbar > * {
-  margin: 0 6px;
-}
-
-/* Scrollbars más discretas */
+/* Scrollbars discretas con colores del tema */
 scrollbar {
-  background-color: transparent;
+  background-color: alpha(@base, 0.5);
+}
+
+scrollbar slider {
+  background-color: alpha(@text, 0.3);
+  border-radius: 4px;
+}
+
+scrollbar slider:hover {
+  background-color: alpha(@text, 0.5);
 }
 
 /* Menú de ajustes minimalista */
 popover.menu {
-  padding: 4px;
+  background-color: @base;
+  background-image: none;
+  color: @text;
+  border: 1px solid @border;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
+popover.menu > contents {
+  background-color: @base;
+  background-image: none;
+  border: none;
+  border-radius: 7px;
+  padding: 6px;
+}
+
+popover.menu > arrow {
+  background-color: @base;
+  background-image: none;
+  border-color: @border;
+}
+
 popover.menu box {
+  background-color: transparent;
+  background-image: none;
   min-width: 180px;
 }
 
+popover.menu separator {
+  background-color: alpha(@border, 0.5);
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
 popover.menu button {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: none;
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 0.9em;
+  box-shadow: none;
 }
 
 popover.menu button:hover {
-  background-color: alpha(@accent_color, 0.1);
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
 }
 
 popover.menu separator {
+  background-color: @border;
+  background-image: none;
   margin: 2px 8px;
   opacity: 0.3;
 }
 
 /* Menú contextual del sidebar - igual de compacto que el menú de configuración */
 popover.menu.context-menu {
+  background-color: @base;
+  background-image: none;
+  color: @text;
   padding: 4px;
   border-radius: 6px;
   min-width: 0;
+  border: 1px solid @border;
+}
+
+popover.menu.context-menu > contents {
+  background-color: @base;
+  background-image: none;
+  border: none;
+  border-radius: 6px;
 }
 
 popover.menu.context-menu box {
+  background-color: transparent;
+  background-image: none;
   min-width: 0;
   padding: 2px;
 }
 
 popover.menu.context-menu button,
 popover.menu.context-menu modelbutton {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: none;
   padding: 4px 10px;
   min-height: 22px;
   min-width: 0;
   border-radius: 4px;
   font-size: 0.85em;
   margin: 0;
+  box-shadow: none;
 }
 
 popover.menu.context-menu modelbutton > box {
+  background-color: transparent;
+  background-image: none;
   padding: 0;
   min-width: 0;
 }
 
 popover.menu.context-menu button:hover,
 popover.menu.context-menu modelbutton:hover {
-  background-color: alpha(@accent_color, 0.08);
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
+}
+
+/* ModelButton general */
+modelbutton {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: none;
+  box-shadow: none;
+}
+
+modelbutton:hover {
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
 }
 
 /* Botones en el footer */
@@ -139,22 +337,96 @@ popover.menu.context-menu modelbutton:hover {
   min-height: 20px;
 }
 
-.status-bar menubutton button {
-  padding: 2px;
+.status-bar menubutton button,
+.status-bar menubutton button.flat {
+  background-color: transparent;
+  color: @text;
+  border: none;
+  padding: 4px 6px;
   font-size: 0.85em;
+  min-height: 20px;
+  min-width: 20px;
+  box-shadow: none;
 }
 
-.status-bar togglebutton {
-  min-height: 24px;
-  padding: 2px 8px;
+.status-bar menubutton button:hover,
+.status-bar menubutton button.flat:hover {
+  background-color: alpha(@selected-text, 0.15);
+  border-radius: 3px;
+}
+
+/* Botones flat en general */
+button.flat {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: none;
+  box-shadow: none;
+}
+
+button.flat:hover {
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
+}
+
+button.flat:active {
+  background-color: alpha(@selected-text, 0.25);
+  background-image: none;
+}
+
+.status-bar togglebutton,
+.status-bar togglebutton.image-button,
+.status-bar togglebutton.toggle {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: none;
+  min-height: 20px;
+  min-width: 20px;
+  padding: 4px 6px;
   font-size: 0.75em;
   font-weight: bold;
   border-radius: 4px;
+  box-shadow: none;
 }
 
-.status-bar togglebutton:checked {
-  background-color: alpha(@accent_color, 0.2);
-  color: @accent_color;
+.status-bar togglebutton:hover,
+.status-bar togglebutton.image-button:hover,
+.status-bar togglebutton.toggle:hover {
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
+  border: none;
+}
+
+.status-bar togglebutton:checked,
+.status-bar togglebutton.image-button:checked,
+.status-bar togglebutton.toggle:checked {
+  background-color: alpha(@selected-text, 0.25);
+  background-image: none;
+  color: @selected-text;
+  border: none;
+}
+
+/* ToggleButton general */
+togglebutton {
+  background-color: transparent;
+  background-image: none;
+  color: @text;
+  border: 1px solid alpha(@border, 0.3);
+  box-shadow: none;
+}
+
+togglebutton:hover {
+  background-color: alpha(@selected-text, 0.15);
+  background-image: none;
+  border-color: @border;
+}
+
+togglebutton:checked {
+  background-color: alpha(@selected-text, 0.25);
+  background-image: none;
+  color: @selected-text;
+  border-color: @selected-text;
 }
 
 /* Tema oscuro específico */
