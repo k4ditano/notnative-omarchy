@@ -26,9 +26,14 @@ Built with ❤️ for [Omarchy OS](https://omarchy.org) by [k4ditano](https://gi
 - **Optimized for Wayland**: First-class support for modern Wayland compositors
 - **System Portals**: Full integration with Omarchy's D-Bus portals
 
-## 📸 Screenshots
+## 📸 Screenshots & Demo
 
 <div align="center">
+
+### Demo Video
+https://github.com/user-attachments/assets/screensaver.mp4
+
+*Full demonstration of NotNative features in action*
 
 ### YouTube Video Integration & Transcripts
 ![YouTube Integration](screenshots/youtube-transcript.png)
