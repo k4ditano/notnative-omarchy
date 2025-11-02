@@ -699,3 +699,122 @@ popover.tags-popover list > row {
 .youtube-play-icon {
   padding: 20px;
 }
+
+/* Estilos para el reproductor de música */
+popover.music-player {
+  background-color: @base;
+  border: 1px solid @border;
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+popover.music-player > contents {
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+}
+
+popover.music-player > arrow {
+  background: none;
+  border: none;
+}
+
+popover.music-player box {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+popover.music-player .music-title {
+  font-weight: 500;
+  font-size: 0.95em;
+  color: @text;
+}
+
+popover.music-player searchentry {
+  background: alpha(@base, 0.6);
+  border: 1px solid @border;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: @text;
+}
+
+popover.music-player list.music-results,
+popover.music-player listbox.music-results {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+popover.music-player list.music-results row,
+popover.music-player listbox.music-results > row {
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  margin: 2px 0;
+  border-radius: 6px;
+  transition: all 150ms ease;
+}
+
+popover.music-player list.music-results row:hover,
+popover.music-player listbox.music-results > row:hover {
+  background: alpha(@selected-text, 0.1);
+}
+
+/* Indicadores de estado del reproductor */
+.music-state-idle {
+  color: alpha(@text, 0.5);
+}
+
+.music-state-playing {
+  color: #4ade80;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.music-state-paused {
+  color: #fbbf24;
+}
+
+.music-state-loading {
+  color: #60a5fa;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.music-state-error {
+  color: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Botones del reproductor con mejor feedback visual */
+popover.music-player button {
+  min-height: 32px;
+  min-width: 32px;
+  padding: 6px;
+  border-radius: 50%;
+  transition: all 150ms ease;
+}
+
+popover.music-player button:hover {
+  background: alpha(@selected-text, 0.15);
+  transform: scale(1.05);
+}
+
+popover.music-player button:active {
+  transform: scale(0.95);
+}
+
+popover.music-player separator {
+  background: @border;
+  min-width: 1px;
+  min-height: 20px;
+}

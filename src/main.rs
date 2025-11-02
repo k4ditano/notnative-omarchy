@@ -25,6 +25,7 @@
 mod app;
 mod core;
 mod i18n;
+mod music_player;
 mod youtube_server;
 mod youtube_transcript;
 
