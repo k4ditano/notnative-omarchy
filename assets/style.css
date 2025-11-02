@@ -705,6 +705,8 @@ popover.tags-popover list > row {
   font-weight: 500;
   font-size: 0.95em;
   color: @text;
+  /* Limitar ancho máximo pero permitir que se vea todo el texto */
+  max-width: 320px;
 }
 
 popover.tags-popover searchentry {

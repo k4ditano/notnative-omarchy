@@ -721,8 +721,14 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
         let music_now_playing_label = gtk::Label::new(Some("No hay música reproduciéndose"));
         music_now_playing_label.set_xalign(0.0);
-        music_now_playing_label.set_wrap(true);
+        music_now_playing_label.set_wrap(false);
+        music_now_playing_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        music_now_playing_label.set_max_width_chars(40);
+        music_now_playing_label.set_width_chars(40);
         music_now_playing_label.add_css_class("music-title");
+
+        // Tooltip para mostrar el título completo
+        music_now_playing_label.set_has_tooltip(true);
 
         let music_state_label = gtk::Label::new(Some("●"));
         music_state_label.set_xalign(0.5);
@@ -2715,11 +2721,10 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 let sender_clone = sender.clone();
 
                 // Actualizar UI - mostrar "Cargando"
-                self.music_now_playing_label.set_text(&format!(
-                    "⏳ {} - {}",
-                    song.title,
-                    song.artist_names()
-                ));
+                let full_title = format!("⏳ {} - {}", song.title, song.artist_names());
+                self.music_now_playing_label.set_text(&full_title);
+                self.music_now_playing_label
+                    .set_tooltip_text(Some(&full_title));
                 self.music_state_label.remove_css_class("music-state-idle");
                 self.music_state_label
                     .remove_css_class("music-state-paused");
@@ -2765,8 +2770,10 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         eprintln!("Error al detener: {}", e);
                     }
                 }
+                let no_music_text = "No hay música reproduciéndose";
+                self.music_now_playing_label.set_text(no_music_text);
                 self.music_now_playing_label
-                    .set_text("No hay música reproduciéndose");
+                    .set_tooltip_text(Some(no_music_text));
                 self.music_state_label
                     .remove_css_class("music-state-playing");
                 self.music_state_label
