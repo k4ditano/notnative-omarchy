@@ -40,6 +40,14 @@ struct TagSpan {
 }
 
 #[derive(Debug, Clone)]
+struct YouTubeVideoSpan {
+    start: i32,
+    end: i32,
+    video_id: String,
+    url: String,
+}
+
+#[derive(Debug, Clone)]
 struct TodoSection {
     title: String,
     total: usize,
@@ -90,6 +98,7 @@ pub struct MainApp {
     main_window: gtk::ApplicationWindow,
     link_spans: Rc<RefCell<Vec<LinkSpan>>>,
     tag_spans: Rc<RefCell<Vec<TagSpan>>>,
+    youtube_video_spans: Rc<RefCell<Vec<YouTubeVideoSpan>>>,
     tags_menu_button: gtk::MenuButton,
     tags_list_box: gtk::ListBox,
     todos_menu_button: gtk::MenuButton,
@@ -112,8 +121,12 @@ pub struct MainApp {
     image_widgets: Rc<RefCell<Vec<gtk::Picture>>>,
     // Widgets de TODOs para modo normal
     todo_widgets: Rc<RefCell<Vec<gtk::CheckButton>>>,
+    // Widgets de videos para modo normal (WebView)
+    video_widgets: Rc<RefCell<Vec<gtk::Box>>>,
     // Sender para comunicación asíncrona desde closures
     app_sender: Rc<RefCell<Option<ComponentSender<Self>>>>,
+    // Servidor HTTP local para embeds de YouTube
+    youtube_server: Rc<crate::youtube_server::YouTubeEmbedServer>,
 }
 
 #[derive(Debug)]
@@ -156,8 +169,11 @@ pub enum AppMsg {
     ChangeLanguage(Language),
     InsertImage, // Abrir diálogo para seleccionar imagen
     InsertImageFromPath(String), // Insertar imagen desde una ruta
-    ProcessPastedText(String), // Procesar texto pegado (puede ser URL de imagen)
+    ProcessPastedText(String), // Procesar texto pegado (puede ser URL de imagen o YouTube)
     ToggleTodo { line_number: usize, new_state: bool }, // Marcar/desmarcar TODO
+    AskTranscribeYouTube { url: String, video_id: String }, // Preguntar si transcribir video
+    InsertYouTubeLink(String), // Insertar solo el enlace del video
+    InsertYouTubeWithTranscript { video_id: String }, // Insertar video con transcripción
 }
 
 #[component(pub)]
@@ -585,6 +601,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             main_window: widgets.main_window.clone(),
             link_spans: Rc::new(RefCell::new(Vec::new())),
             tag_spans: Rc::new(RefCell::new(Vec::new())),
+            youtube_video_spans: Rc::new(RefCell::new(Vec::new())),
             tags_menu_button: widgets.tags_menu_button.clone(),
             tags_list_box: widgets.tags_list_box.clone(),
             todos_menu_button: widgets.todos_menu_button.clone(),
@@ -604,7 +621,16 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             settings_button: widgets.settings_button.clone(),
             image_widgets: Rc::new(RefCell::new(Vec::new())),
             todo_widgets: Rc::new(RefCell::new(Vec::new())),
+            video_widgets: Rc::new(RefCell::new(Vec::new())),
             app_sender: Rc::new(RefCell::new(None)),
+            youtube_server: {
+                let server = Rc::new(crate::youtube_server::YouTubeEmbedServer::new(8787));
+                // Iniciar el servidor en un thread separado
+                if let Err(e) = server.start() {
+                    eprintln!("Error iniciando servidor YouTube: {}", e);
+                }
+                server
+            },
         };
         
         // Guardar el sender en el modelo
@@ -1992,6 +2018,15 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 // Actualizar barra de estado
                 self.update_status_bar(&sender);
             }
+            AppMsg::AskTranscribeYouTube { url, video_id } => {
+                self.show_transcribe_dialog(url, video_id, &sender);
+            }
+            AppMsg::InsertYouTubeLink(video_id) => {
+                self.insert_youtube_link(&video_id, &sender);
+            }
+            AppMsg::InsertYouTubeWithTranscript { video_id } => {
+                self.insert_youtube_with_transcript(&video_id, &sender);
+            }
         }
     }
 }
@@ -2602,7 +2637,7 @@ impl MainApp {
                     }
                 }
                 
-                // Links: [texto](url) -> mostrar solo texto
+                // Links: [texto](url) -> mostrar solo texto (o marcador de video si es YouTube)
                 '[' if !in_code_block => {
                     let mut link_text = String::new();
                     let mut found_close = false;
@@ -2617,16 +2652,27 @@ impl MainApp {
                         link_text.push(next_ch);
                     }
                     
-                    // Si encontramos ](, saltar la URL
+                    // Si encontramos ](, extraer y analizar la URL
                     if found_close && chars.peek() == Some(&'(') {
                         chars.next(); // Consumir (
+                        let mut url = String::new();
                         while let Some(&next_ch) = chars.peek() {
                             chars.next();
                             if next_ch == ')' {
                                 break;
                             }
+                            url.push(next_ch);
                         }
-                        result.push_str(&link_text);
+                        
+                        // Verificar si es un enlace de YouTube
+                        if let Some(video_id) = Self::extract_youtube_video_id(&url) {
+                            // Insertar marcador especial para videos de YouTube
+                            let marker = format!("[VIDEO:{}]", video_id);
+                            result.push_str(&marker);
+                        } else {
+                            // Link normal, mostrar solo el texto
+                            result.push_str(&link_text);
+                        }
                     } else {
                         // No era un link válido, restaurar [
                         result.push('[');
@@ -2711,8 +2757,18 @@ impl MainApp {
         let end = self.text_buffer.end_iter();
         self.text_buffer.remove_all_tags(&start, &end);
         
-        // Limpiar widgets de imágenes y TODOs anteriores
+        // Limpiar widgets de imágenes, videos y TODOs anteriores
+        // IMPORTANTE: Primero remover los child anchors del buffer para limpiar WebViews
+        for video_widget in self.video_widgets.borrow().iter() {
+            if let Some(parent) = video_widget.parent() {
+                // Si el padre es un ChildAnchor, necesitamos removerlo del TextView
+                // pero GTK lo maneja automáticamente al eliminar el anchor del buffer
+                video_widget.unparent();
+            }
+        }
+        
         self.image_widgets.borrow_mut().clear();
+        self.video_widgets.borrow_mut().clear();
         self.todo_widgets.borrow_mut().clear();
         
         // Obtener texto original para detectar markdown
@@ -2723,6 +2779,7 @@ impl MainApp {
         let clean_lines: Vec<&str> = clean_text.lines().collect();
         self.link_spans.borrow_mut().clear();
         self.tag_spans.borrow_mut().clear();
+        self.youtube_video_spans.borrow_mut().clear();
         let mut clean_idx = 0usize;
         let mut orig_idx = 0usize;
         let mut in_code_block = false;
@@ -2793,9 +2850,15 @@ impl MainApp {
             orig_idx += 1;
         }
         
-        // IMPORTANTE: Procesar imágenes y TODOs DESPUÉS de aplicar todos los estilos
+        // IMPORTANTE: Procesar imágenes, videos y TODOs DESPUÉS de aplicar todos los estilos
         // para evitar invalidar los iteradores
         self.process_all_images_in_buffer();
+        
+        // Procesar videos de YouTube usando marcadores [VIDEO:...] solo en modo NORMAL
+        if *self.mode.borrow() == EditorMode::Normal {
+            self.process_all_video_markers_in_buffer();
+        }
+        
         self.process_all_todos_in_buffer();
     }
     
@@ -2920,6 +2983,228 @@ impl MainApp {
             // Guardar referencia al widget
             self.image_widgets.borrow_mut().push(picture);
         }
+    }
+    
+    /// Procesa todos los marcadores de video [VIDEO:video_id] en el buffer completo
+    fn process_all_video_markers_in_buffer(&self) {
+        // Obtener todo el texto del buffer
+        let start = self.text_buffer.start_iter();
+        let end = self.text_buffer.end_iter();
+        let buffer_text = self.text_buffer.text(&start, &end, false).to_string();
+        
+        // Debug: ver si hay marcadores
+        if buffer_text.contains("[VIDEO:") {
+            println!("DEBUG: Buffer contiene marcadores de video");
+        }
+        
+        // Buscar todos los marcadores y sus posiciones
+        let mut videos = Vec::new();
+        let mut search_pos = 0;
+        
+        while let Some(video_start) = buffer_text[search_pos..].find("[VIDEO:") {
+            let absolute_start = search_pos + video_start;
+            
+            // Buscar el cierre ]
+            if let Some(video_end_relative) = buffer_text[absolute_start..].find(']') {
+                let absolute_end = absolute_start + video_end_relative;
+                
+                // Extraer el video_id
+                let video_id = buffer_text[absolute_start + 7..absolute_end].to_string(); // +7 para saltar "[VIDEO:"
+                
+                println!("DEBUG: Encontrado marcador de video: {} en posición {}", video_id, absolute_start);
+                
+                videos.push((absolute_start, absolute_end + 1, video_id)); // +1 para incluir ]
+                search_pos = absolute_end + 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Procesar videos en orden inverso para no afectar las posiciones
+        for (start, end, video_id) in videos.into_iter().rev() {
+            // Eliminar el marcador del buffer
+            let mut marker_start = self.text_buffer.start_iter();
+            marker_start.set_offset(start as i32);
+            let mut marker_end = self.text_buffer.start_iter();
+            marker_end.set_offset(end as i32);
+            self.text_buffer.delete(&mut marker_start, &mut marker_end);
+            
+            // Insertar salto de línea
+            let mut anchor_pos = self.text_buffer.start_iter();
+            anchor_pos.set_offset(start as i32);
+            self.text_buffer.insert(&mut anchor_pos, "\n");
+            
+            // Actualizar posición y crear anchor
+            anchor_pos.set_offset(start as i32 + 1);
+            let anchor = self.text_buffer.create_child_anchor(&mut anchor_pos);
+            
+            // Crear contenedor para el video
+            let video_container = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            video_container.set_margin_top(8);
+            video_container.set_margin_bottom(8);
+            video_container.set_width_request(640);
+            
+            // Crear WebView
+            use webkit6::prelude::WebViewExt;
+            use webkit6::WebView;
+            
+            let webview = WebView::new();
+            webview.set_size_request(640, 360);
+            
+            // Configurar settings del WebView
+            if let Some(settings) = WebViewExt::settings(&webview) {
+                settings.set_enable_javascript(true);
+                settings.set_enable_media(true);
+                settings.set_media_playback_requires_user_gesture(false);
+                settings.set_enable_media_stream(true);
+                settings.set_enable_webgl(true);
+                settings.set_enable_write_console_messages_to_stdout(true);
+                settings.set_allow_universal_access_from_file_urls(true);
+                settings.set_allow_file_access_from_file_urls(true);
+                settings.set_javascript_can_access_clipboard(true);
+                settings.set_enable_html5_database(true);
+                settings.set_enable_html5_local_storage(true);
+                settings.set_enable_encrypted_media(true);
+                settings.set_enable_media_capabilities(true);
+                settings.set_enable_back_forward_navigation_gestures(true);
+                settings.set_enable_developer_extras(true);
+                settings.set_user_agent(Some("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+                settings.set_hardware_acceleration_policy(webkit6::HardwareAccelerationPolicy::Always);
+            }
+            
+            // Registrar video en el servidor
+            let local_url = self.youtube_server.register_video(video_id.clone());
+            
+            // Añadir WebView al contenedor
+            video_container.append(&webview);
+            
+            // Cargar URL de forma asíncrona
+            let webview_clone = webview.clone();
+            let local_url_clone = local_url.clone();
+            glib::idle_add_local_once(move || {
+                webview_clone.load_uri(&local_url_clone);
+            });
+            
+            // Anclar al TextView
+            self.text_view.add_child_at_anchor(&video_container, &anchor);
+            
+            // Insertar salto de línea después
+            let mut after_anchor = self.text_buffer.start_iter();
+            after_anchor.set_offset(start as i32 + 1);
+            self.text_buffer.insert(&mut after_anchor, "\n");
+            
+            // Guardar referencia
+            self.video_widgets.borrow_mut().push(video_container);
+        }
+    }
+}
+
+/// Procesa todos los enlaces de YouTube de forma asíncrona (función standalone)
+fn process_youtube_videos_async_with_spans(
+    text_buffer: &gtk::TextBuffer,
+    video_spans: Vec<YouTubeVideoSpan>,
+    text_view: &gtk::TextView,
+    video_widgets: &Rc<RefCell<Vec<gtk::Box>>>,
+    youtube_server: &Rc<crate::youtube_server::YouTubeEmbedServer>,
+) {
+    
+    for video_span in video_spans.iter() {
+        let start = video_span.start;
+        let end = video_span.end;
+        let video_id = &video_span.video_id;
+        
+        // Eliminar el texto del enlace [texto](url) del buffer
+        let mut start_iter = text_buffer.start_iter();
+        start_iter.set_offset(start);
+        let mut end_iter = text_buffer.start_iter();
+        end_iter.set_offset(end);
+        text_buffer.delete(&mut start_iter, &mut end_iter);
+        
+        // Insertar salto de línea donde estaba el enlace
+        let mut anchor_pos = text_buffer.start_iter();
+        anchor_pos.set_offset(start);
+        text_buffer.insert(&mut anchor_pos, "\n");
+        
+        // Actualizar posición después de la inserción
+        anchor_pos.set_offset(start + 1);
+        
+        // Crear anchor en la posición donde estaba el marcador
+        let anchor = text_buffer.create_child_anchor(&mut anchor_pos);
+        
+        // Crear contenedor para el video
+        let video_container = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        video_container.set_margin_top(8);
+        video_container.set_margin_bottom(8);
+        video_container.set_width_request(640);
+        
+        // Crear WebView para embeber el video desde servidor local
+        use webkit6::prelude::WebViewExt;
+        use webkit6::WebView;
+        
+        let webview = WebView::new();
+        webview.set_size_request(640, 360); // Tamaño 16:9
+        
+        // Configurar settings del WebView con User-Agent de navegador real y permisos máximos
+        if let Some(settings) = WebViewExt::settings(&webview) {
+            settings.set_enable_javascript(true);
+            settings.set_enable_media(true);
+            settings.set_media_playback_requires_user_gesture(false);
+            settings.set_enable_media_stream(true);
+            settings.set_enable_webgl(true);
+            settings.set_enable_write_console_messages_to_stdout(true);
+            settings.set_allow_universal_access_from_file_urls(true);
+            settings.set_allow_file_access_from_file_urls(true);
+            settings.set_javascript_can_access_clipboard(true);
+            settings.set_enable_html5_database(true);
+            settings.set_enable_html5_local_storage(true);
+            settings.set_enable_encrypted_media(true);
+            settings.set_enable_media_capabilities(true);
+            settings.set_enable_back_forward_navigation_gestures(true);
+            settings.set_enable_developer_extras(true);
+            // User-Agent de Chrome/Firefox actual para evitar restricciones
+            settings.set_user_agent(Some("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
+            settings.set_hardware_acceleration_policy(webkit6::HardwareAccelerationPolicy::Always);
+        }
+        
+        // Registrar el video en el servidor HTTP local
+        let local_url = youtube_server.register_video(video_id.clone());
+        
+        // Añadir el WebView al contenedor PRIMERO (sin cargar URL aún)
+        video_container.append(&webview);
+        
+        // Cargar la URL de forma asíncrona usando glib::idle_add para no bloquear la UI
+        let webview_clone = webview.clone();
+        let local_url_clone = local_url.clone();
+        glib::idle_add_local_once(move || {
+            // Cargar la URL después de que la UI se haya renderizado
+            webview_clone.load_uri(&local_url_clone);
+        });
+        
+        text_view.add_child_at_anchor(&video_container, &anchor);
+        
+        // Insertar salto de línea después del video para separación
+        let mut after_anchor = text_buffer.start_iter();
+        after_anchor.set_offset(start + 1);
+        text_buffer.insert(&mut after_anchor, "\n");
+        
+        // Guardar referencia al widget
+        video_widgets.borrow_mut().push(video_container);
+    }
+}
+
+impl MainApp {
+    
+    /// Procesa todos los enlaces de YouTube detectados y los embebe con WebKit
+    /// (Versión simplificada que delega a la función async)
+    fn process_youtube_videos_in_buffer(&self) {
+        let video_spans = self.youtube_video_spans.borrow().clone();
+        process_youtube_videos_async_with_spans(
+            &self.text_buffer,
+            video_spans,
+            &self.text_view,
+            &self.video_widgets,
+            &self.youtube_server
+        );
     }
     
     /// Procesa todos los marcadores de TODO [TODO:unchecked] y [TODO:checked] en el buffer completo
@@ -3082,6 +3367,20 @@ impl MainApp {
                 if let Some(start) = link_start_offset.take() {
                     if !url.is_empty() {
                         let end_offset = line_offset + clean_pos as i32;
+                        
+                        // Verificar si es un enlace de YouTube
+                        if let Some(video_id) = Self::extract_youtube_video_id(&url) {
+                            self.youtube_video_spans
+                                .borrow_mut()
+                                .push(YouTubeVideoSpan { 
+                                    start, 
+                                    end: end_offset, 
+                                    video_id,
+                                    url: url.clone(),
+                                });
+                        }
+                        
+                        // Siempre guardar como link normal también
                         self.link_spans
                             .borrow_mut()
                             .push(LinkSpan { start, end: end_offset, url });
@@ -4897,6 +5196,194 @@ impl MainApp {
             || url_lower.ends_with(".ico")
     }
     
+    /// Detecta si una URL es de YouTube y extrae el video ID
+    /// Soporta formatos:
+    /// - https://youtube.com/watch?v=VIDEO_ID
+    /// - https://www.youtube.com/watch?v=VIDEO_ID
+    /// - https://youtu.be/VIDEO_ID
+    /// - https://youtube.com/shorts/VIDEO_ID
+    fn extract_youtube_video_id(url: &str) -> Option<String> {
+        use regex::Regex;
+        
+        let patterns = [
+            // youtube.com/watch?v=VIDEO_ID
+            r"(?:youtube\.com|www\.youtube\.com)/watch\?v=([a-zA-Z0-9_-]{11})",
+            // youtu.be/VIDEO_ID
+            r"youtu\.be/([a-zA-Z0-9_-]{11})",
+            // youtube.com/shorts/VIDEO_ID
+            r"(?:youtube\.com|www\.youtube\.com)/shorts/([a-zA-Z0-9_-]{11})",
+        ];
+        
+        for pattern in &patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                if let Some(captures) = re.captures(url) {
+                    if let Some(video_id) = captures.get(1) {
+                        return Some(video_id.as_str().to_string());
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Obtiene la transcripción de un video de YouTube de forma asíncrona
+    /// TODO: Implementar con una librería compatible o API alternativa
+    async fn fetch_youtube_transcript(_video_id: &str) -> anyhow::Result<String> {
+        // Por ahora, devolvemos un mensaje indicando que la función está pendiente
+        Err(anyhow::anyhow!("Transcripción de YouTube no disponible actualmente. Esta función se implementará en una futura actualización."))
+    }
+    
+    /// Muestra un diálogo preguntando si transcribir el video de YouTube
+    fn show_transcribe_dialog(&self, url: String, video_id: String, sender: &ComponentSender<Self>) {
+        let i18n = self.i18n.borrow();
+        
+        let dialog = gtk::Window::builder()
+            .transient_for(&self.main_window)
+            .modal(true)
+            .title(&i18n.t("transcribe_youtube"))
+            .default_width(450)
+            .default_height(180)
+            .build();
+        
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(24)
+            .margin_end(24)
+            .margin_top(20)
+            .margin_bottom(20)
+            .spacing(16)
+            .build();
+        
+        // Icono y mensaje
+        let header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        
+        let icon = gtk::Image::from_icon_name("video-x-generic-symbolic");
+        icon.set_pixel_size(48);
+        header_box.append(&icon);
+        
+        let text_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+        
+        let title = gtk::Label::builder()
+            .label(&i18n.t("youtube_detected"))
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .build();
+        title.add_css_class("heading");
+        text_box.append(&title);
+        
+        let video_id_label = gtk::Label::builder()
+            .label(&format!("Video ID: {}", video_id))
+            .halign(gtk::Align::Start)
+            .build();
+        video_id_label.add_css_class("dim-label");
+        text_box.append(&video_id_label);
+        
+        header_box.append(&text_box);
+        content_box.append(&header_box);
+        
+        // Botones
+        let buttons_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::End)
+            .margin_top(8)
+            .build();
+        
+        let cancel_button = gtk::Button::builder()
+            .label(&i18n.t("cancel"))
+            .build();
+        
+        let only_link_button = gtk::Button::builder()
+            .label(&i18n.t("only_link"))
+            .build();
+        
+        let transcribe_button = gtk::Button::builder()
+            .label(&i18n.t("transcribe_and_insert"))
+            .build();
+        transcribe_button.add_css_class("suggested-action");
+        
+        // Conectar botones
+        let dialog_clone = dialog.clone();
+        cancel_button.connect_clicked(move |_| {
+            dialog_clone.close();
+        });
+        
+        let dialog_clone = dialog.clone();
+        let sender_clone = sender.clone();
+        let video_id_clone = video_id.clone();
+        only_link_button.connect_clicked(move |_| {
+            sender_clone.input(AppMsg::InsertYouTubeLink(video_id_clone.clone()));
+            dialog_clone.close();
+        });
+        
+        let dialog_clone = dialog.clone();
+        let sender_clone = sender.clone();
+        let video_id_clone = video_id.clone();
+        transcribe_button.connect_clicked(move |_| {
+            sender_clone.input(AppMsg::InsertYouTubeWithTranscript { 
+                video_id: video_id_clone.clone() 
+            });
+            dialog_clone.close();
+        });
+        
+        buttons_box.append(&cancel_button);
+        buttons_box.append(&only_link_button);
+        buttons_box.append(&transcribe_button);
+        
+        content_box.append(&buttons_box);
+        
+        dialog.set_child(Some(&content_box));
+        dialog.present();
+    }
+    
+    /// Inserta un enlace de YouTube sin transcripción
+    fn insert_youtube_link(&mut self, video_id: &str, sender: &ComponentSender<Self>) {
+        let youtube_url = format!("https://www.youtube.com/watch?v={}", video_id);
+        let markdown_syntax = format!("[🎥 Ver video en YouTube]({})", youtube_url);
+        
+        self.buffer.insert(self.cursor_position, &markdown_syntax);
+        self.cursor_position += markdown_syntax.chars().count();
+        self.has_unsaved_changes = true;
+        
+        // Sincronizar vista
+        self.sync_to_view();
+        self.update_status_bar(sender);
+        
+        println!("Enlace de YouTube insertado: {}", video_id);
+    }
+    
+    /// Inserta un enlace de YouTube con transcripción
+    /// Por ahora solo inserta el enlace, la transcripción se implementará más adelante
+    fn insert_youtube_with_transcript(&mut self, video_id: &str, sender: &ComponentSender<Self>) {
+        let i18n = self.i18n.borrow();
+        
+        // Por ahora, insertar solo el enlace con una nota sobre la transcripción
+        let youtube_url = format!("https://www.youtube.com/watch?v={}", video_id);
+        let markdown_syntax = format!("[🎥 Ver video en YouTube]({})\n\n## {}\n\n_{}_\n\n", 
+            youtube_url,
+            i18n.t("transcript_section"),
+            i18n.t("transcript_unavailable"));
+        
+        self.buffer.insert(self.cursor_position, &markdown_syntax);
+        self.cursor_position += markdown_syntax.chars().count();
+        self.has_unsaved_changes = true;
+        
+        // Sincronizar vista
+        self.sync_to_view();
+        self.update_status_bar(sender);
+        
+        println!("Enlace de YouTube insertado (transcripción no disponible aún): {}", video_id);
+    }
+    
     /// Descarga una imagen desde una URL y la guarda en assets
     fn download_image_from_url(url: &str) -> anyhow::Result<std::path::PathBuf> {
         use std::io::Write;
@@ -4943,6 +5430,20 @@ impl MainApp {
     fn process_pasted_text(&mut self, text: &str, sender: &ComponentSender<Self>) {
         let trimmed = text.trim();
         
+        // Verificar primero si es una URL de YouTube
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            if let Some(video_id) = Self::extract_youtube_video_id(trimmed) {
+                println!("Detectada URL de YouTube: {} (video_id: {})", trimmed, video_id);
+                
+                // Preguntar si desea transcribir
+                sender.input(AppMsg::AskTranscribeYouTube {
+                    url: trimmed.to_string(),
+                    video_id,
+                });
+                return;
+            }
+        }
+        
         // Verificar si es una URL de imagen
         if (trimmed.starts_with("http://") || trimmed.starts_with("https://")) 
             && Self::is_image_url(trimmed) {
@@ -4965,7 +5466,7 @@ impl MainApp {
                 }
             });
         } else {
-            // Si no es una URL de imagen, insertar como texto normal
+            // Si no es una URL de YouTube ni imagen, insertar como texto normal
             self.buffer.insert(self.cursor_position, text);
             self.cursor_position += text.chars().count();
             self.has_unsaved_changes = true;

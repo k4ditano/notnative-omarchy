@@ -20,3 +20,6 @@ notify = "6"
 rusqlite = { version = "0.31", features = ["bundled", "column_decltype"] }
 reqwest = { version = "0.12", features = ["blocking"] }
 open = "5"
+regex = "1"
+webkit6 = "0.5"
+tiny_http = "0.12"

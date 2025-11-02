@@ -20,6 +20,7 @@ pub enum StyleType {
     Link,
     Quote,
     Image { src: String, alt: String },
+    YouTubeVideo { video_id: String, url: String },
 }
 
 /// Parser de markdown que extrae información de estilo

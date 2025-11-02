@@ -1,6 +1,7 @@
 mod app;
 mod core;
 mod i18n;
+mod youtube_server;
 
 use relm4::{
     RelmApp,

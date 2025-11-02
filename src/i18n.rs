@@ -171,6 +171,16 @@ impl I18n {
         translations.insert("completed", ("completo", "completed"));
         translations.insert("no_section", ("Sin sección", "No section"));
         
+        // YouTube
+        translations.insert("transcribe_youtube", ("¿Transcribir video de YouTube?", "Transcribe YouTube video?"));
+        translations.insert("youtube_detected", ("Se ha detectado un enlace de YouTube", "A YouTube link has been detected"));
+        translations.insert("only_link", ("Solo enlace", "Only link"));
+        translations.insert("transcribe_and_insert", ("Transcribir e insertar", "Transcribe and insert"));
+        translations.insert("downloading_transcript", ("Descargando transcripción...", "Downloading transcript..."));
+        translations.insert("transcript_error", ("Error al obtener transcripción", "Error fetching transcript"));
+        translations.insert("transcript_unavailable", ("Transcripción no disponible para este video", "Transcript unavailable for this video"));
+        translations.insert("transcript_section", ("📝 Transcripción", "📝 Transcript"));
+        
         Self {
             language,
             translations,

@@ -676,3 +676,27 @@ popover.tags-popover list > row {
   padding: 0;
 }
 
+/* Estilos para botón de video de YouTube */
+.youtube-video-button {
+  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+  border: 2px solid alpha(@border, 0.3);
+  border-radius: 8px;
+  padding: 0;
+  transition: all 200ms ease;
+}
+
+.youtube-video-button:hover {
+  background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
+  border-color: @border;
+  transform: scale(1.02);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.youtube-video-button:active {
+  transform: scale(0.98);
+}
+
+.youtube-play-icon {
+  padding: 20px;
+  text-align: center;
+}
