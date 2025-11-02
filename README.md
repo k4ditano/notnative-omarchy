@@ -31,7 +31,8 @@ Built with ❤️ for [Omarchy OS](https://omarchy.org) by [k4ditano](https://gi
 <div align="center">
 
 ### Demo Video
-https://github.com/user-attachments/assets/screensaver.mp4
+
+https://github.com/k4ditano/notnative-app/assets/screensaver.mp4
 
 *Full demonstration of NotNative features in action*
 
