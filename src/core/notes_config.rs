@@ -38,41 +38,41 @@ impl NotesConfig {
             audio_output_sink: None,
         }
     }
-    
+
     /// Carga la configuración desde un archivo
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: NotesConfig = serde_json::from_str(&content)?;
         Ok(config)
     }
-    
+
     /// Guarda la configuración a un archivo
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(path, content)?;
         Ok(())
     }
-    
+
     /// Obtiene la posición de una nota en el orden personalizado
     pub fn get_position(&self, note_name: &str) -> Option<usize> {
         self.order.get(note_name).copied()
     }
-    
+
     /// Establece la posición de una nota
     pub fn set_position(&mut self, note_name: String, position: usize) {
         self.order.insert(note_name, position);
     }
-    
+
     /// Remueve una nota del orden
     pub fn remove_note(&mut self, note_name: &str) {
         self.order.remove(note_name);
     }
-    
+
     /// Mueve una nota a una nueva posición, reordenando las demás
     pub fn move_note(&mut self, note_name: &str, new_position: usize) {
         // Obtener posición actual
         let old_position = self.get_position(note_name);
-        
+
         // Actualizar posiciones de todas las notas afectadas
         if let Some(old_pos) = old_position {
             if old_pos < new_position {
@@ -98,16 +98,16 @@ impl NotesConfig {
                 }
             }
         }
-        
+
         // Establecer nueva posición
         self.order.insert(note_name.to_string(), new_position);
     }
-    
+
     /// Verifica si una carpeta está expandida
     pub fn is_folder_expanded(&self, folder: &str) -> bool {
         self.expanded_folders.contains(&folder.to_string())
     }
-    
+
     /// Alterna el estado de expansión de una carpeta
     pub fn toggle_folder(&mut self, folder: String) {
         if let Some(pos) = self.expanded_folders.iter().position(|f| f == &folder) {
@@ -116,37 +116,37 @@ impl NotesConfig {
             self.expanded_folders.push(folder);
         }
     }
-    
+
     /// Obtiene la preferencia de idioma
     pub fn get_language(&self) -> Option<&str> {
         self.language.as_deref()
     }
-    
+
     /// Establece la preferencia de idioma
     pub fn set_language(&mut self, lang: Option<String>) {
         self.language = lang;
     }
-    
+
     /// Obtiene el directorio de trabajo personalizado
     pub fn get_workspace_dir(&self) -> Option<&str> {
         self.workspace_dir.as_deref()
     }
-    
+
     /// Establece el directorio de trabajo personalizado
     pub fn set_workspace_dir(&mut self, dir: Option<String>) {
         self.workspace_dir = dir;
     }
-    
+
     /// Obtiene la salida de audio preferida
     pub fn get_audio_output_sink(&self) -> Option<&str> {
         self.audio_output_sink.as_deref()
     }
-    
+
     /// Establece la salida de audio preferida
     pub fn set_audio_output_sink(&mut self, sink: Option<String>) {
         self.audio_output_sink = sink;
     }
-    
+
     /// Ruta por defecto del archivo de configuración
     pub fn default_path() -> PathBuf {
         dirs::data_local_dir()
@@ -154,7 +154,7 @@ impl NotesConfig {
             .join("notnative")
             .join("config.json")
     }
-    
+
     /// Obtiene la carpeta de assets para las notas
     pub fn assets_dir() -> PathBuf {
         dirs::data_local_dir()
@@ -162,7 +162,7 @@ impl NotesConfig {
             .join("notnative")
             .join("assets")
     }
-    
+
     /// Asegura que el directorio de assets exista
     pub fn ensure_assets_dir() -> Result<PathBuf> {
         let assets_dir = Self::assets_dir();

@@ -5,7 +5,7 @@ use crate::core::EditorMode;
 pub enum EditorAction {
     /// Cambiar de modo
     ChangeMode(EditorMode),
-    
+
     /// Movimientos del cursor
     MoveCursorLeft,
     MoveCursorRight,
@@ -15,7 +15,7 @@ pub enum EditorAction {
     MoveCursorLineEnd,
     MoveCursorDocStart,
     MoveCursorDocEnd,
-    
+
     /// Edición
     InsertChar(char),
     InsertNewline,
@@ -23,35 +23,35 @@ pub enum EditorAction {
     DeleteCharAfter,
     DeleteLine,
     DeleteSelection,
-    
+
     /// Insertar imagen
     InsertImage,
-    
+
     /// Undo/Redo
     Undo,
     Redo,
-    
+
     /// Portapapeles
     Copy,
     Cut,
     Paste,
-    
+
     /// Comandos ex-style
     Save,
     Quit,
     SaveAndQuit,
     ForceQuit,
-    
+
     /// Búsqueda
     Search(String),
-    
+
     /// Sidebar
     OpenSidebar,
     CloseSidebar,
-    
+
     /// Crear nueva nota
     CreateNote,
-    
+
     /// Sin acción
     None,
 }
@@ -92,13 +92,13 @@ impl CommandParser {
             "v" => EditorAction::ChangeMode(EditorMode::Visual),
             "t" => EditorAction::OpenSidebar,
             "n" => EditorAction::CreateNote,
-            
+
             // Movimientos básicos (vim-style)
             "h" | "Left" => EditorAction::MoveCursorLeft,
             "j" | "Down" => EditorAction::MoveCursorDown,
             "k" | "Up" => EditorAction::MoveCursorUp,
             "l" | "Right" => EditorAction::MoveCursorRight,
-            
+
             // Movimientos de línea
             "0" => EditorAction::MoveCursorLineStart,
             "$" => EditorAction::MoveCursorLineEnd,
@@ -111,7 +111,7 @@ impl CommandParser {
                 EditorAction::None
             }
             "G" => EditorAction::MoveCursorDocEnd,
-            
+
             // Edición
             "x" => EditorAction::DeleteCharAfter,
             "d" if self.pending == "d" => {
@@ -122,15 +122,15 @@ impl CommandParser {
                 self.pending.push_str("d");
                 EditorAction::None
             }
-            
+
             "u" => EditorAction::Undo,
-            
+
             // ESC en modo Normal: cerrar sidebar si está abierto
             "Escape" => {
                 self.pending.clear();
                 EditorAction::CloseSidebar
             }
-            
+
             _ => {
                 self.pending.clear();
                 EditorAction::None
@@ -151,7 +151,7 @@ impl CommandParser {
                     _ => EditorAction::None,
                 };
             }
-            
+
             return match key {
                 "s" => EditorAction::Save,
                 "c" => EditorAction::Copy,
@@ -173,7 +173,7 @@ impl CommandParser {
             "Down" => EditorAction::MoveCursorDown,
             "space" => EditorAction::InsertChar(' '),
             "Tab" => EditorAction::InsertChar('\t'),
-            
+
             // Caracteres especiales comunes que GTK reporta con nombres específicos
             "period" => EditorAction::InsertChar('.'),
             "comma" => EditorAction::InsertChar(','),
@@ -207,7 +207,7 @@ impl CommandParser {
             "asciitilde" => EditorAction::InsertChar('~'),
             "bar" => EditorAction::InsertChar('|'),
             "asciicircum" => EditorAction::InsertChar('^'),
-            
+
             _ => {
                 // Si es un carácter imprimible de longitud 1, insertarlo
                 if key.chars().count() == 1 {
@@ -228,9 +228,7 @@ impl CommandParser {
             "q" | "quit" => EditorAction::Quit,
             "wq" | "x" => EditorAction::SaveAndQuit,
             "q!" => EditorAction::ForceQuit,
-            _ if trimmed.starts_with('/') => {
-                EditorAction::Search(trimmed[1..].to_string())
-            }
+            _ if trimmed.starts_with('/') => EditorAction::Search(trimmed[1..].to_string()),
             _ => EditorAction::None,
         }
     }
@@ -317,10 +315,7 @@ mod tests {
 
         assert_eq!(parser.parse_command_mode("w"), EditorAction::Save);
         assert_eq!(parser.parse_command_mode("q"), EditorAction::Quit);
-        assert_eq!(
-            parser.parse_command_mode("wq"),
-            EditorAction::SaveAndQuit
-        );
+        assert_eq!(parser.parse_command_mode("wq"), EditorAction::SaveAndQuit);
         assert_eq!(
             parser.parse_command_mode("/search"),
             EditorAction::Search("search".to_string())

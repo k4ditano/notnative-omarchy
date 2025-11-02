@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Servidor HTTP ligero para servir páginas de embed de YouTube
@@ -27,7 +27,8 @@ impl YouTubeEmbedServer {
 
     /// Genera el HTML de embed para un video
     fn generate_embed_html(video_id: &str) -> String {
-        format!(r#"
+        format!(
+            r#"
 <!DOCTYPE html>
 <html>
 <head>
@@ -69,7 +70,9 @@ impl YouTubeEmbedServer {
     </iframe>
 </body>
 </html>
-        "#, video_id)
+        "#,
+            video_id
+        )
     }
 
     /// Inicia el servidor en un thread separado
@@ -86,22 +89,34 @@ impl YouTubeEmbedServer {
             for request in server.incoming_requests() {
                 let url = request.url();
                 println!("DEBUG SERVER: Request recibido: {}", url);
-                
+
                 // Extraer video_id de la URL /video/{video_id}
                 if let Some(video_id) = url.strip_prefix("/video/") {
                     let videos_lock = videos.lock().unwrap();
-                    
+
                     if let Some(html) = videos_lock.get(video_id) {
                         println!("DEBUG SERVER: Sirviendo video: {}", video_id);
                         let response = tiny_http::Response::from_string(html.clone())
                             .with_header(
-                                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap()
+                                tiny_http::Header::from_bytes(
+                                    &b"Content-Type"[..],
+                                    &b"text/html; charset=utf-8"[..],
+                                )
+                                .unwrap(),
                             )
                             .with_header(
-                                tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap()
+                                tiny_http::Header::from_bytes(
+                                    &b"Access-Control-Allow-Origin"[..],
+                                    &b"*"[..],
+                                )
+                                .unwrap(),
                             )
                             .with_header(
-                                tiny_http::Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap()
+                                tiny_http::Header::from_bytes(
+                                    &b"Cache-Control"[..],
+                                    &b"no-cache"[..],
+                                )
+                                .unwrap(),
                             );
                         let _ = request.respond(response);
                     } else {
@@ -112,8 +127,8 @@ impl YouTubeEmbedServer {
                     }
                 } else {
                     println!("DEBUG SERVER: Path no reconocido: {}", url);
-                    let response = tiny_http::Response::from_string("Not found")
-                        .with_status_code(404);
+                    let response =
+                        tiny_http::Response::from_string("Not found").with_status_code(404);
                     let _ = request.respond(response);
                 }
             }

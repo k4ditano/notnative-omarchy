@@ -1,19 +1,19 @@
-use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, Result as SqliteResult, params, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Result as SqliteResult, params};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("Database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Note not found: {0}")]
     NoteNotFound(String),
-    
+
     #[error("Tag not found: {0}")]
     TagNotFound(String),
 }
@@ -79,27 +79,27 @@ impl std::fmt::Debug for NotesDatabase {
 impl NotesDatabase {
     /// Versión actual del esquema
     const SCHEMA_VERSION: i32 = 1;
-    
+
     /// Crear o abrir base de datos en la ruta especificada
     pub fn new(path: &Path) -> Result<Self> {
         // Crear directorio si no existe
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         let conn = Connection::open(path)?;
-        
+
         let mut db = Self {
             conn,
             path: path.to_path_buf(),
         };
-        
+
         db.initialize_schema()?;
         db.migrate_if_needed()?;
-        
+
         Ok(db)
     }
-    
+
     /// Inicializar esquema de base de datos
     fn initialize_schema(&mut self) -> Result<()> {
         self.conn.execute_batch(
@@ -153,41 +153,49 @@ impl NotesDatabase {
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
             "#,
         )?;
-        
+
         // Insertar versión del esquema si no existe (por separado porque execute_batch no soporta params)
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (?1)",
             params![Self::SCHEMA_VERSION],
         )?;
-        
+
         self.conn.execute(
             "UPDATE schema_version SET version = ?1",
             params![Self::SCHEMA_VERSION],
         )?;
-        
+
         Ok(())
     }
-    
+
     /// Verificar y ejecutar migraciones si es necesario
     fn migrate_if_needed(&mut self) -> Result<()> {
-        let current_version: i32 = self.conn.query_row(
-            "SELECT version FROM schema_version",
-            [],
-            |row| row.get(0),
-        )?;
-        
+        let current_version: i32 =
+            self.conn
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))?;
+
         if current_version < Self::SCHEMA_VERSION {
-            println!("Migrando base de datos de v{} a v{}", current_version, Self::SCHEMA_VERSION);
+            println!(
+                "Migrando base de datos de v{} a v{}",
+                current_version,
+                Self::SCHEMA_VERSION
+            );
             // Aquí irían las migraciones futuras
         }
-        
+
         Ok(())
     }
-    
+
     /// Indexar una nota en la base de datos
-    pub fn index_note(&self, name: &str, path: &str, content: &str, folder: Option<&str>) -> Result<i64> {
+    pub fn index_note(
+        &self,
+        name: &str,
+        path: &str,
+        content: &str,
+        folder: Option<&str>,
+    ) -> Result<i64> {
         let now = Utc::now().timestamp();
-        
+
         // Insertar o actualizar nota
         self.conn.execute(
             r#"
@@ -200,108 +208,119 @@ impl NotesDatabase {
             "#,
             params![name, path, folder, now, now],
         )?;
-        
+
         let note_id = self.conn.last_insert_rowid();
-        
+
         // Indexar en FTS5
         self.conn.execute(
             "INSERT OR REPLACE INTO notes_fts (rowid, name, content) VALUES (?1, ?2, ?3)",
             params![note_id, name, content],
         )?;
-        
+
         Ok(note_id)
     }
-    
+
     /// Actualizar una nota existente
     pub fn update_note(&self, name: &str, content: &str) -> Result<()> {
         let now = Utc::now().timestamp();
-        
+
         // Obtener ID de la nota
-        let note_id: i64 = self.conn.query_row(
-            "SELECT id FROM notes WHERE name = ?1",
-            params![name],
-            |row| row.get(0),
-        ).optional()?
+        let note_id: i64 = self
+            .conn
+            .query_row(
+                "SELECT id FROM notes WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?
             .ok_or_else(|| DatabaseError::NoteNotFound(name.to_string()))?;
-        
+
         // Actualizar timestamp
         self.conn.execute(
             "UPDATE notes SET updated_at = ?1 WHERE id = ?2",
             params![now, note_id],
         )?;
-        
+
         // Actualizar FTS5
         self.conn.execute(
             "UPDATE notes_fts SET content = ?1 WHERE rowid = ?2",
             params![content, note_id],
         )?;
-        
+
         Ok(())
     }
-    
+
     /// Eliminar una nota de la base de datos
     pub fn delete_note(&self, name: &str) -> Result<()> {
-        let note_id: Option<i64> = self.conn.query_row(
-            "SELECT id FROM notes WHERE name = ?1",
-            params![name],
-            |row| row.get(0),
-        ).optional()?;
-        
+        let note_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM notes WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?;
+
         if let Some(id) = note_id {
-            self.conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
-            self.conn.execute("DELETE FROM notes_fts WHERE rowid = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM notes WHERE id = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM notes_fts WHERE rowid = ?1", params![id])?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Obtener metadata de una nota
     pub fn get_note(&self, name: &str) -> Result<Option<NoteMetadata>> {
-        let result = self.conn.query_row(
-            r#"
+        let result = self
+            .conn
+            .query_row(
+                r#"
             SELECT id, name, path, folder, order_index, created_at, updated_at
             FROM notes WHERE name = ?1
             "#,
-            params![name],
-            |row| {
-                Ok(NoteMetadata {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    path: row.get(2)?,
-                    folder: row.get(3)?,
-                    order_index: row.get(4)?,
-                    created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
-                    updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
-                })
-            },
-        ).optional()?;
-        
+                params![name],
+                |row| {
+                    Ok(NoteMetadata {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        path: row.get(2)?,
+                        folder: row.get(3)?,
+                        order_index: row.get(4)?,
+                        created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
+                        updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                    })
+                },
+            )
+            .optional()?;
+
         Ok(result)
     }
-    
+
     /// Listar todas las notas, opcionalmente filtradas por carpeta
     pub fn list_notes(&self, folder: Option<&str>) -> Result<Vec<NoteMetadata>> {
         let mut stmt = if folder.is_some() {
             self.conn.prepare(
                 "SELECT id, name, path, folder, order_index, created_at, updated_at 
-                 FROM notes WHERE folder = ?1 ORDER BY order_index, name"
+                 FROM notes WHERE folder = ?1 ORDER BY order_index, name",
             )?
         } else {
             self.conn.prepare(
                 "SELECT id, name, path, folder, order_index, created_at, updated_at 
-                 FROM notes ORDER BY order_index, name"
+                 FROM notes ORDER BY order_index, name",
             )?
         };
-        
+
         let notes = if let Some(f) = folder {
             stmt.query_map(params![f], Self::row_to_note_metadata)?
         } else {
             stmt.query_map([], Self::row_to_note_metadata)?
         };
-        
+
         notes.collect::<SqliteResult<Vec<_>>>().map_err(Into::into)
     }
-    
+
     /// Convertir fila SQL a NoteMetadata
     fn row_to_note_metadata(row: &rusqlite::Row) -> SqliteResult<NoteMetadata> {
         Ok(NoteMetadata {
@@ -314,12 +333,13 @@ impl NotesDatabase {
             updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
         })
     }
-    
+
     /// Buscar notas usando FTS5 y filtros opcionales
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchResult>> {
         if query.text.is_none() && query.tags.is_empty() {
             // Sin filtros, devolver todas las notas
-            let notes = self.list_notes(query.folder.as_deref())?
+            let notes = self
+                .list_notes(query.folder.as_deref())?
                 .into_iter()
                 .map(|note| SearchResult {
                     note_id: note.id,
@@ -332,28 +352,28 @@ impl NotesDatabase {
                 .collect();
             return Ok(notes);
         }
-        
+
         // TODO: Implementar búsqueda FTS5 completa con snippets
         Ok(vec![])
     }
-    
+
     /// Construye una query FTS5 inteligente desde el texto del usuario
     fn build_fts_query(query_text: &str) -> String {
         let trimmed = query_text.trim();
-        
+
         // Si el usuario usa comillas, buscar literalmente
         if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() > 2 {
-            let literal = &trimmed[1..trimmed.len()-1];
+            let literal = &trimmed[1..trimmed.len() - 1];
             return format!("\"{}\"", literal.replace('"', "\"\""));
         }
-        
+
         // Separar por palabras y construir query con OR
         let words: Vec<&str> = trimmed.split_whitespace().collect();
-        
+
         if words.is_empty() {
             return String::new();
         }
-        
+
         // Si es una sola palabra, usar wildcard para prefijos
         if words.len() == 1 {
             let word = Self::sanitize_fts_word(words[0]);
@@ -362,7 +382,7 @@ impl NotesDatabase {
             }
             return format!("{}*", word);
         }
-        
+
         // Para múltiples palabras, buscar todas con AND (deben estar todas presentes)
         let sanitized_words: Vec<String> = words
             .iter()
@@ -370,45 +390,47 @@ impl NotesDatabase {
             .filter(|w| !w.is_empty())
             .map(|w| format!("{}*", w))
             .collect();
-        
+
         if sanitized_words.is_empty() {
             return String::new();
         }
-        
+
         sanitized_words.join(" ")
     }
-    
+
     /// Sanitiza una palabra individual para FTS5
     fn sanitize_fts_word(word: &str) -> String {
         // Caracteres especiales de FTS5 que necesitan ser escapados o removidos
         let mut result = String::new();
-        
+
         for ch in word.chars() {
             match ch {
                 // Operadores FTS5 que removemos
-                '"' | '*' | '(' | ')' | '{' | '}' | '[' | ']' | '^' | ':' | '#' | '+' | '-' | '!' | '&' | '|' | '~' | '.' | ',' | ';' | '=' | '<' | '>' | '/' | '\\' | '?' | '@' | '%' | '$' => {},
+                '"' | '*' | '(' | ')' | '{' | '}' | '[' | ']' | '^' | ':' | '#' | '+' | '-'
+                | '!' | '&' | '|' | '~' | '.' | ',' | ';' | '=' | '<' | '>' | '/' | '\\' | '?'
+                | '@' | '%' | '$' => {}
                 // Caracteres válidos (letras, números, _, espacios)
                 _ => result.push(ch),
             }
         }
-        
+
         result
     }
-    
+
     /// Búsqueda simple por texto usando FTS5
     pub fn search_notes(&self, query_text: &str) -> Result<Vec<SearchResult>> {
         if query_text.trim().is_empty() {
             return Ok(vec![]);
         }
-        
+
         // Construir query FTS5 inteligente
         let fts_query = Self::build_fts_query(query_text);
-        
+
         // Si después de sanitizar no queda nada válido, retornar vacío
         if fts_query.trim().is_empty() {
             return Ok(vec![]);
         }
-        
+
         let mut stmt = self.conn.prepare(
             r#"
             SELECT 
@@ -422,30 +444,31 @@ impl NotesDatabase {
             WHERE notes_fts MATCH ?1
             ORDER BY rank
             LIMIT 50
-            "#
+            "#,
         )?;
-        
-        let results = stmt.query_map([&fts_query], |row| {
-            Ok(SearchResult {
-                note_id: row.get(0)?,
-                note_name: row.get(1)?,
-                note_path: row.get(2)?,
-                snippet: row.get(3)?,
-                relevance: row.get::<_, f64>(4)? as f32,
-                matched_tags: vec![],
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-        
+
+        let results = stmt
+            .query_map([&fts_query], |row| {
+                Ok(SearchResult {
+                    note_id: row.get(0)?,
+                    note_name: row.get(1)?,
+                    note_path: row.get(2)?,
+                    snippet: row.get(3)?,
+                    relevance: row.get::<_, f64>(4)? as f32,
+                    matched_tags: vec![],
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
         Ok(results)
     }
-    
+
     /// Obtener todos los tags ordenados por uso
     pub fn get_tags(&self) -> Result<Vec<Tag>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, color, usage_count FROM tags ORDER BY usage_count DESC, name"
+            "SELECT id, name, color, usage_count FROM tags ORDER BY usage_count DESC, name",
         )?;
-        
+
         let tags = stmt.query_map([], |row| {
             Ok(Tag {
                 id: row.get(0)?,
@@ -454,10 +477,10 @@ impl NotesDatabase {
                 usage_count: row.get(3)?,
             })
         })?;
-        
+
         tags.collect::<SqliteResult<Vec<_>>>().map_err(Into::into)
     }
-    
+
     /// Añadir un tag a una nota
     pub fn add_tag(&self, note_id: i64, tag_name: &str) -> Result<()> {
         // Crear tag si no existe
@@ -465,52 +488,55 @@ impl NotesDatabase {
             "INSERT OR IGNORE INTO tags (name, usage_count) VALUES (?1, 0)",
             params![tag_name],
         )?;
-        
+
         let tag_id: i64 = self.conn.query_row(
             "SELECT id FROM tags WHERE name = ?1",
             params![tag_name],
             |row| row.get(0),
         )?;
-        
+
         // Añadir relación
         self.conn.execute(
             "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
             params![note_id, tag_id],
         )?;
-        
+
         // Incrementar contador de uso
         self.conn.execute(
             "UPDATE tags SET usage_count = usage_count + 1 WHERE id = ?1",
             params![tag_id],
         )?;
-        
+
         Ok(())
     }
-    
+
     /// Remover un tag de una nota
     pub fn remove_tag(&self, note_id: i64, tag_name: &str) -> Result<()> {
-        let tag_id: Option<i64> = self.conn.query_row(
-            "SELECT id FROM tags WHERE name = ?1",
-            params![tag_name],
-            |row| row.get(0),
-        ).optional()?;
-        
+        let tag_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM tags WHERE name = ?1",
+                params![tag_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+
         if let Some(tid) = tag_id {
             self.conn.execute(
                 "DELETE FROM note_tags WHERE note_id = ?1 AND tag_id = ?2",
                 params![note_id, tid],
             )?;
-            
+
             // Decrementar contador
             self.conn.execute(
                 "UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?1",
                 params![tid],
             )?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Obtener tags de una nota específica
     pub fn get_note_tags(&self, note_id: i64) -> Result<Vec<Tag>> {
         let mut stmt = self.conn.prepare(
@@ -522,7 +548,7 @@ impl NotesDatabase {
             ORDER BY t.name
             "#,
         )?;
-        
+
         let tags = stmt.query_map(params![note_id], |row| {
             Ok(Tag {
                 id: row.get(0)?,
@@ -531,10 +557,10 @@ impl NotesDatabase {
                 usage_count: row.get(3)?,
             })
         })?;
-        
+
         tags.collect::<SqliteResult<Vec<_>>>().map_err(Into::into)
     }
-    
+
     /// Actualizar el orden de una nota
     pub fn update_note_order(&self, note_id: i64, new_order: i32) -> Result<()> {
         self.conn.execute(
@@ -543,9 +569,14 @@ impl NotesDatabase {
         )?;
         Ok(())
     }
-    
+
     /// Mover una nota a una carpeta diferente
-    pub fn move_note_to_folder(&self, note_id: i64, new_folder: Option<&str>, new_path: &str) -> Result<()> {
+    pub fn move_note_to_folder(
+        &self,
+        note_id: i64,
+        new_folder: Option<&str>,
+        new_path: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE notes SET folder = ?1, path = ?2 WHERE id = ?3",
             params![new_folder, new_path, note_id],
@@ -557,65 +588,64 @@ impl NotesDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_create_database() {
         let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_notes.db");
-        
+
         let db = NotesDatabase::new(&db_path).unwrap();
         assert!(db_path.exists());
-        
+
         // Cleanup
         std::fs::remove_file(db_path).ok();
     }
-    
+
     #[test]
     fn test_index_note() {
         let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_notes_index.db");
-        
+
         let db = NotesDatabase::new(&db_path).unwrap();
-        
-        let note_id = db.index_note(
-            "test-note",
-            "/path/to/test-note.md",
-            "# Test Note\n\nSome content here.",
-            None,
-        ).unwrap();
-        
+
+        let note_id = db
+            .index_note(
+                "test-note",
+                "/path/to/test-note.md",
+                "# Test Note\n\nSome content here.",
+                None,
+            )
+            .unwrap();
+
         assert!(note_id > 0);
-        
+
         let note = db.get_note("test-note").unwrap();
         assert!(note.is_some());
-        
+
         // Cleanup
         std::fs::remove_file(db_path).ok();
     }
-    
+
     #[test]
     fn test_tags() {
         let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_notes_tags.db");
-        
+
         let db = NotesDatabase::new(&db_path).unwrap();
-        
-        let note_id = db.index_note(
-            "tagged-note",
-            "/path/to/tagged-note.md",
-            "Content",
-            None,
-        ).unwrap();
-        
+
+        let note_id = db
+            .index_note("tagged-note", "/path/to/tagged-note.md", "Content", None)
+            .unwrap();
+
         db.add_tag(note_id, "rust").unwrap();
         db.add_tag(note_id, "gtk").unwrap();
-        
+
         let tags = db.get_note_tags(note_id).unwrap();
         assert_eq!(tags.len(), 2);
-        
+
         let all_tags = db.get_tags().unwrap();
         assert_eq!(all_tags.len(), 2);
-        
+
         // Cleanup
         std::fs::remove_file(db_path).ok();
     }

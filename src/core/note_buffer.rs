@@ -283,16 +283,16 @@ mod tests {
     #[test]
     fn test_line_col_conversion() {
         let buffer = NoteBuffer::from_text("abc\ndefgh\nij");
-        
+
         // "abc\n" = 4 chars (línea 0)
         // "defgh\n" = 6 chars (línea 1)
         // "ij" = 2 chars (línea 2)
-        
+
         assert_eq!(buffer.line_col_to_char(0, 0), Some(0)); // 'a'
         assert_eq!(buffer.line_col_to_char(0, 2), Some(2)); // 'c'
         assert_eq!(buffer.line_col_to_char(1, 0), Some(4)); // 'd'
         assert_eq!(buffer.line_col_to_char(2, 1), Some(11)); // 'j'
-        
+
         assert_eq!(buffer.char_to_line_col(0), Some((0, 0)));
         assert_eq!(buffer.char_to_line_col(4), Some((1, 0)));
         assert_eq!(buffer.char_to_line_col(11), Some((2, 1)));

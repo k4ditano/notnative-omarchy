@@ -1,3 +1,27 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::needless_borrows_for_generic_args,
+    clippy::op_ref,
+    clippy::manual_strip,
+    clippy::needless_option_as_deref,
+    clippy::double_ended_iterator_last,
+    clippy::inherent_to_string,
+    clippy::derivable_impls,
+    clippy::single_char_add_str,
+    clippy::only_used_in_recursion,
+    clippy::while_let_on_iterator,
+    clippy::if_same_then_else,
+    clippy::match_result_ok,
+    clippy::clone_on_copy,
+    clippy::len_zero,
+    clippy::unnecessary_map_or,
+    clippy::unwrap_or_default,
+    clippy::field_reassign_with_default,
+    dead_code,
+    unused_variables,
+    unused_imports
+)]
+
 mod app;
 mod core;
 mod i18n;
@@ -14,16 +38,16 @@ use crate::app::{APP_ID, MainApp, ThemePreference};
 fn load_theme_css() -> (String, bool) {
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
     let theme_dir = format!("{}/.config/omarchy/current/theme", home_dir);
-    
+
     let css_files = vec![
         format!("{}/walker.css", theme_dir),
         format!("{}/waybar.css", theme_dir),
         format!("{}/swayosd.css", theme_dir),
     ];
-    
+
     let mut combined_css = String::new();
     let mut theme_loaded = false;
-    
+
     for css_file in &css_files {
         if let Ok(content) = std::fs::read_to_string(css_file) {
             combined_css.push_str(&content);
@@ -31,7 +55,7 @@ fn load_theme_css() -> (String, bool) {
             theme_loaded = true;
         }
     }
-    
+
     // Cargar el CSS de la aplicación
     // Prioridad: 1) Sistema instalado, 2) Desarrollo local
     let app_css = std::fs::read_to_string("/usr/share/notnative/assets/style.css")
@@ -39,7 +63,8 @@ fn load_theme_css() -> (String, bool) {
         .or_else(|| {
             // Rutas de desarrollo
             if let Ok(exe_path) = std::env::current_exe() {
-                exe_path.parent()
+                exe_path
+                    .parent()
                     .and_then(|p| p.parent())
                     .and_then(|p| p.parent())
                     .map(|p| p.join("assets/style.css"))
@@ -50,11 +75,11 @@ fn load_theme_css() -> (String, bool) {
         })
         .or_else(|| std::fs::read_to_string("assets/style.css").ok())
         .or_else(|| std::fs::read_to_string("./notnative-app/assets/style.css").ok());
-    
+
     if let Some(app_css_content) = app_css {
         combined_css.push_str(&app_css_content);
     }
-    
+
     (combined_css, theme_loaded)
 }
 
@@ -66,7 +91,7 @@ fn main() -> anyhow::Result<()> {
     // Cargar tema inicial
     let (combined_css, theme_loaded) = load_theme_css();
     let theme_provider = gtk::CssProvider::new();
-    
+
     if theme_loaded || !combined_css.is_empty() {
         theme_provider.load_from_data(&combined_css);
         gtk::style_context_add_provider_for_display(
