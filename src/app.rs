@@ -797,8 +797,9 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
         let music_player_popover = gtk::Popover::new();
         music_player_popover.set_child(Some(&music_player_content));
-        music_player_popover.add_css_class("music-player");
+        music_player_popover.add_css_class("tags-popover");
         music_player_popover.set_autohide(true);
+        music_player_popover.set_has_arrow(false);
 
         widgets
             .music_player_button

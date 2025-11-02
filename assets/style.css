@@ -700,43 +700,14 @@ popover.tags-popover list > row {
   padding: 20px;
 }
 
-/* Estilos para el reproductor de música - mismo estilo que otros popovers */
-popover.music-player {
-  background-color: @base;
-  background-image: none;
-  color: @text;
-  border: 1px solid @border;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  padding: 6px;
-}
-
-popover.music-player > contents {
-  background-color: transparent;
-  background-image: none;
-  border: none;
-  padding: 0;
-}
-
-popover.music-player > arrow {
-  background: none;
-  border: none;
-}
-
-popover.music-player box {
-  background-color: transparent;
-  background-image: none;
-  border: none;
-  min-width: 350px;
-}
-
-popover.music-player .music-title {
+/* Estilos específicos del reproductor de música (usa .tags-popover como base) */
+.music-title {
   font-weight: 500;
   font-size: 0.95em;
   color: @text;
 }
 
-popover.music-player searchentry {
+popover.tags-popover searchentry {
   background-color: alpha(@base, 0.8);
   background-image: none;
   border: 1px solid @border;
@@ -746,20 +717,20 @@ popover.music-player searchentry {
   margin: 4px 0;
 }
 
-popover.music-player searchentry > text {
+popover.tags-popover searchentry > text {
   background-color: transparent;
   background-image: none;
 }
 
-popover.music-player list.music-results,
-popover.music-player listbox.music-results {
+popover.tags-popover list.music-results,
+popover.tags-popover listbox.music-results {
   background: transparent;
   border: none;
   padding: 0;
 }
 
-popover.music-player list.music-results row,
-popover.music-player listbox.music-results > row {
+popover.tags-popover list.music-results row,
+popover.tags-popover listbox.music-results > row {
   background: transparent;
   border: none;
   padding: 8px 12px;
@@ -768,8 +739,8 @@ popover.music-player listbox.music-results > row {
   transition: all 150ms ease;
 }
 
-popover.music-player list.music-results row:hover,
-popover.music-player listbox.music-results > row:hover {
+popover.tags-popover list.music-results row:hover,
+popover.tags-popover listbox.music-results > row:hover {
   background: alpha(@selected-text, 0.1);
 }
 
@@ -805,8 +776,8 @@ popover.music-player listbox.music-results > row:hover {
   }
 }
 
-/* Botones del reproductor - estilo compacto consistente con otros popovers */
-popover.music-player button {
+/* Botones del reproductor - estilo consistente con tags-popover */
+popover.tags-popover button.flat.circular {
   background-color: transparent;
   background-image: none;
   color: @text;
@@ -819,17 +790,17 @@ popover.music-player button {
   box-shadow: none;
 }
 
-popover.music-player button:hover {
+popover.tags-popover button.flat.circular:hover {
   background-color: alpha(@selected-text, 0.15);
   background-image: none;
 }
 
-popover.music-player button:active {
+popover.tags-popover button.flat.circular:active {
   background-color: alpha(@selected-text, 0.25);
   background-image: none;
 }
 
-popover.music-player separator {
+popover.tags-popover separator {
   background-color: @border;
   background-image: none;
   margin: 6px 0;
