@@ -8522,7 +8522,7 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .program_name("NotNative")
-            .version("0.1.0")
+            .version("0.1.3")
             .comments(&i18n.t("app_description"))
             .website("https://github.com/k4ditano/notnative-app")
             .website_label(&i18n.t("website"))
