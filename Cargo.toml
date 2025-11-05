@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 relm4 = { version = "0.10", features = ["macros"] }
 ashpd = { version = "0.10", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 ropey = "1.6"
 pulldown-cmark = { version = "0.10", default-features = false }
 anyhow = "1"
@@ -27,6 +27,11 @@ yt-transcript-rs = "0.1.8"
 libmpv2 = "4.0"
 rustypipe = "0.11"
 libc = "0.2"
+
+# AI Chat dependencies
+async-openai = "0.24"
+async-trait = "0.1"
+futures = "0.3"
 
 [features]
 default = ["sqlite-bundled"]

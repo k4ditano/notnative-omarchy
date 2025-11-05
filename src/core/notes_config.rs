@@ -3,6 +3,66 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Configuración del asistente AI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIConfig {
+    /// API Key para el proveedor de AI
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Proveedor de AI (openai, anthropic, ollama)
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    /// Modelo a utilizar (gpt-4, gpt-3.5-turbo, claude-3, etc.)
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    /// Temperatura para la generación (0.0 - 2.0)
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+    /// Máximo de tokens en la respuesta
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// Guardar historial de chat en la base de datos
+    #[serde(default = "default_save_history")]
+    pub save_history: bool,
+    /// URL base personalizada para APIs (útil para Ollama local)
+    #[serde(default)]
+    pub custom_api_url: Option<String>,
+}
+
+fn default_ai_provider() -> String {
+    "openrouter".to_string()
+}
+
+fn default_ai_model() -> String {
+    "google/gemini-flash-1.5".to_string()
+}
+
+fn default_temperature() -> f32 {
+    0.7
+}
+
+fn default_max_tokens() -> u32 {
+    2000
+}
+
+fn default_save_history() -> bool {
+    true
+}
+
+impl Default for AIConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            provider: default_ai_provider(),
+            model: default_ai_model(),
+            temperature: default_temperature(),
+            max_tokens: default_max_tokens(),
+            save_history: default_save_history(),
+            custom_api_url: None,
+        }
+    }
+}
+
 /// Configuración del orden y organización de notas
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotesConfig {
@@ -22,6 +82,9 @@ pub struct NotesConfig {
     /// Última nota abierta
     #[serde(default)]
     pub last_opened_note: Option<String>,
+    /// Configuración del asistente AI
+    #[serde(default)]
+    pub ai_config: AIConfig,
 }
 
 impl Default for NotesConfig {
@@ -40,6 +103,7 @@ impl NotesConfig {
             workspace_dir: None,
             audio_output_sink: None,
             last_opened_note: None,
+            ai_config: AIConfig::default(),
         }
     }
 
@@ -182,5 +246,45 @@ impl NotesConfig {
         let assets_dir = Self::assets_dir();
         std::fs::create_dir_all(&assets_dir)?;
         Ok(assets_dir)
+    }
+
+    /// Obtiene la configuración de AI
+    pub fn get_ai_config(&self) -> &AIConfig {
+        &self.ai_config
+    }
+
+    /// Obtiene la configuración de AI mutable
+    pub fn get_ai_config_mut(&mut self) -> &mut AIConfig {
+        &mut self.ai_config
+    }
+
+    /// Establece la API key del asistente AI
+    pub fn set_ai_api_key(&mut self, api_key: Option<String>) {
+        self.ai_config.api_key = api_key;
+    }
+
+    /// Establece el proveedor de AI
+    pub fn set_ai_provider(&mut self, provider: String) {
+        self.ai_config.provider = provider;
+    }
+
+    /// Establece el modelo de AI
+    pub fn set_ai_model(&mut self, model: String) {
+        self.ai_config.model = model;
+    }
+
+    /// Establece la temperatura de AI
+    pub fn set_ai_temperature(&mut self, temperature: f32) {
+        self.ai_config.temperature = temperature.clamp(0.0, 2.0);
+    }
+
+    /// Establece el máximo de tokens
+    pub fn set_ai_max_tokens(&mut self, max_tokens: u32) {
+        self.ai_config.max_tokens = max_tokens;
+    }
+
+    /// Establece si se debe guardar el historial
+    pub fn set_ai_save_history(&mut self, save_history: bool) {
+        self.ai_config.save_history = save_history;
     }
 }

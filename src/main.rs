@@ -22,9 +22,12 @@
     unused_imports
 )]
 
+mod ai_chat;
+mod ai_client;
 mod app;
 mod core;
 mod i18n;
+mod mcp;
 mod music_player;
 mod youtube_server;
 mod youtube_transcript;
@@ -59,24 +62,58 @@ fn load_theme_css() -> (String, bool) {
     }
 
     // Cargar el CSS de la aplicación
-    // Prioridad: 1) Sistema instalado, 2) Desarrollo local
-    let app_css = std::fs::read_to_string("/usr/share/notnative/assets/style.css")
+    // Prioridad: 1) Desarrollo local, 2) Sistema instalado
+    println!("🔍 [main.rs] Intentando cargar CSS...");
+    let app_css = std::fs::read_to_string("assets/style.css")
+        .inspect(|_| println!("✅ [main.rs] CSS cargado desde: assets/style.css"))
         .ok()
         .or_else(|| {
-            // Rutas de desarrollo
+            println!("🔍 [main.rs] Intentando ./notnative-app/assets/style.css");
+            std::fs::read_to_string("./notnative-app/assets/style.css")
+                .inspect(|_| {
+                    println!("✅ [main.rs] CSS cargado desde: ./notnative-app/assets/style.css")
+                })
+                .ok()
+        })
+        .or_else(|| {
+            // Rutas de desarrollo basadas en el ejecutable
             if let Ok(exe_path) = std::env::current_exe() {
-                exe_path
+                let css_path = exe_path
                     .parent()
                     .and_then(|p| p.parent())
                     .and_then(|p| p.parent())
-                    .map(|p| p.join("assets/style.css"))
-                    .and_then(|path| std::fs::read_to_string(&path).ok())
-            } else {
-                None
+                    .map(|p| p.join("assets/style.css"));
+
+                if let Some(ref path) = css_path {
+                    println!("🔍 [main.rs] Intentando ruta exe: {:?}", path);
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        println!("✅ [main.rs] CSS cargado desde ruta exe: {:?}", path);
+                        return Some(content);
+                    }
+                }
             }
+            None
         })
-        .or_else(|| std::fs::read_to_string("assets/style.css").ok())
-        .or_else(|| std::fs::read_to_string("./notnative-app/assets/style.css").ok());
+        .or_else(|| {
+            println!("🔍 [main.rs] Intentando /usr/share/notnative-app/assets/style.css");
+            std::fs::read_to_string("/usr/share/notnative-app/assets/style.css")
+                .inspect(|_| {
+                    println!(
+                        "✅ [main.rs] CSS cargado desde: /usr/share/notnative-app/assets/style.css"
+                    )
+                })
+                .ok()
+        })
+        .or_else(|| {
+            println!("🔍 [main.rs] Intentando /usr/share/notnative/assets/style.css (fallback)");
+            std::fs::read_to_string("/usr/share/notnative/assets/style.css")
+                .inspect(|_| {
+                    println!(
+                        "✅ [main.rs] CSS cargado desde: /usr/share/notnative/assets/style.css"
+                    )
+                })
+                .ok()
+        });
 
     // Combinamos los CSS: primero las variables de Omarchy, luego el CSS de la app
     let mut combined_css = String::new();

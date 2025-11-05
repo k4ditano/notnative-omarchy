@@ -9,6 +9,8 @@ pub enum EditorMode {
     Command,
     /// Modo visual: selección de texto (futuro)
     Visual,
+    /// Modo chat con IA: interacción con asistente AI
+    ChatAI,
 }
 
 impl EditorMode {
@@ -19,12 +21,13 @@ impl EditorMode {
             EditorMode::Insert => "INSERT",
             EditorMode::Command => "COMMAND",
             EditorMode::Visual => "VISUAL",
+            EditorMode::ChatAI => "CHAT AI",
         }
     }
 
     /// Devuelve si el modo permite edición directa de texto
     pub fn is_editable(&self) -> bool {
-        matches!(self, EditorMode::Insert)
+        matches!(self, EditorMode::Insert | EditorMode::ChatAI)
     }
 }
 

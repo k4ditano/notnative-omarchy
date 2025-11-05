@@ -100,6 +100,16 @@ impl NotesDatabase {
         Ok(db)
     }
 
+    /// Clona la conexión abriendo una nueva conexión a la misma base de datos
+    pub fn clone_connection(&self) -> Self {
+        let conn =
+            Connection::open(&self.path).expect("No se pudo clonar la conexión a la base de datos");
+        Self {
+            conn,
+            path: self.path.clone(),
+        }
+    }
+
     /// Inicializar esquema de base de datos
     fn initialize_schema(&mut self) -> Result<()> {
         self.conn.execute_batch(
@@ -151,6 +161,42 @@ impl NotesDatabase {
             CREATE INDEX IF NOT EXISTS idx_tags_usage ON tags(usage_count DESC);
             CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id);
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
+            
+            -- Tabla de sesiones de chat
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                temperature REAL DEFAULT 0.7,
+                max_tokens INTEGER DEFAULT 2000
+            );
+            
+            -- Tabla de mensajes de chat
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+            );
+            
+            -- Tabla de notas adjuntas al contexto del chat
+            CREATE TABLE IF NOT EXISTS chat_context_notes (
+                session_id INTEGER NOT NULL,
+                note_id INTEGER NOT NULL,
+                added_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, note_id),
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );
+            
+            -- Índices para chat
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
+            CREATE INDEX IF NOT EXISTS idx_chat_context_session ON chat_context_notes(session_id);
             "#,
         )?;
 
@@ -581,6 +627,141 @@ impl NotesDatabase {
             "UPDATE notes SET folder = ?1, path = ?2 WHERE id = ?3",
             params![new_folder, new_path, note_id],
         )?;
+        Ok(())
+    }
+
+    // === Chat History Methods ===
+
+    /// Crear una nueva sesión de chat
+    pub fn create_chat_session(
+        &self,
+        model: &str,
+        provider: &str,
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<i64> {
+        let now = Utc::now().timestamp();
+
+        self.conn.execute(
+            r#"
+            INSERT INTO chat_sessions (created_at, updated_at, model, provider, temperature, max_tokens)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![now, now, model, provider, temperature, max_tokens as i64],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Guardar un mensaje en una sesión
+    pub fn save_chat_message(&self, session_id: i64, role: &str, content: &str) -> Result<i64> {
+        let now = Utc::now().timestamp();
+
+        self.conn.execute(
+            r#"
+            INSERT INTO chat_messages (session_id, role, content, created_at)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+            params![session_id, role, content, now],
+        )?;
+
+        // Actualizar timestamp de la sesión
+        self.conn.execute(
+            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now, session_id],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Obtener mensajes de una sesión
+    pub fn get_chat_messages(
+        &self,
+        session_id: i64,
+    ) -> Result<Vec<(String, String, DateTime<Utc>)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT role, content, created_at
+            FROM chat_messages
+            WHERE session_id = ?1
+            ORDER BY created_at ASC
+            "#,
+        )?;
+
+        let messages = stmt
+            .query_map(params![session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    DateTime::from_timestamp(row.get::<_, i64>(2)?, 0).unwrap(),
+                ))
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(messages)
+    }
+
+    /// Adjuntar una nota al contexto de una sesión
+    pub fn attach_note_to_chat(&self, session_id: i64, note_id: i64) -> Result<()> {
+        let now = Utc::now().timestamp();
+
+        self.conn.execute(
+            r#"
+            INSERT OR IGNORE INTO chat_context_notes (session_id, note_id, added_at)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![session_id, note_id, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// Obtener notas adjuntas al contexto de una sesión
+    pub fn get_chat_context_notes(&self, session_id: i64) -> Result<Vec<NoteMetadata>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT n.id, n.name, n.path, n.folder, n.order_index, n.created_at, n.updated_at
+            FROM notes n
+            INNER JOIN chat_context_notes ccn ON n.id = ccn.note_id
+            WHERE ccn.session_id = ?1
+            ORDER BY ccn.added_at ASC
+            "#,
+        )?;
+
+        let notes = stmt
+            .query_map(params![session_id], Self::row_to_note_metadata)?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(notes)
+    }
+
+    /// Obtener la última sesión de chat
+    pub fn get_latest_chat_session(&self) -> Result<Option<i64>> {
+        let session_id = self
+            .conn
+            .query_row(
+                "SELECT id FROM chat_sessions ORDER BY updated_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(session_id)
+    }
+
+    /// Eliminar una sesión de chat y todos sus mensajes
+    pub fn delete_chat_session(&self, session_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM chat_sessions WHERE id = ?1",
+            params![session_id],
+        )?;
+        // Los mensajes y contexto se eliminan por CASCADE
+        Ok(())
+    }
+
+    /// Eliminar todo el historial de chat
+    pub fn clear_all_chat_history(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM chat_sessions", [])?;
         Ok(())
     }
 }

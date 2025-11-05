@@ -809,3 +809,414 @@ popover.tags-popover separator {
   min-height: 1px;
   opacity: 0.3;
 }
+
+/* === CHAT AI MODE === */
+
+/* Contenedor principal del Chat AI */
+.chat-ai-container {
+  background-color: @base;
+}
+
+/* === CHAT AI LAYOUT === */
+.chat-ai-root {
+  background: @base;
+  color: @text;
+}
+
+paned.chat-ai-split {
+  background: transparent;
+  border-top: 1px solid alpha(@border, 0.2);
+}
+
+box.chat-main {
+  background: transparent;
+  padding: 0 16px 16px 16px;
+}
+
+.chat-ai-header {
+  background: transparent;
+  border-bottom: 1px solid alpha(@border, 0.2);
+  padding: 8px 12px;
+}
+
+label.chat-header-icon {
+  padding: 4px;
+  min-width: 20px;
+  min-height: 20px;
+  font-size: 0.9em;
+  color: alpha(@text, 0.7);
+}
+
+box.chat-header-content {
+  padding: 0;
+}
+
+label.chat-header-title {
+  font-size: 0.9em;
+  font-weight: 500;
+  color: @text;
+}
+
+label.chat-header-subtitle {
+  font-size: 0.75em;
+  color: alpha(@text, 0.6);
+}
+
+box.chat-header-right {
+  margin-left: auto;
+}
+
+progressbar.chat-token-progress,
+progressbar.chat-tokens-progress {
+  min-width: 140px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid alpha(@border, 0.3);
+  border-radius: 4px;
+}
+
+progressbar.chat-token-progress text,
+progressbar.chat-tokens-progress text {
+  color: alpha(@text, 0.7);
+  font-size: 0.7em;
+}
+
+progressbar.chat-token-progress trough,
+progressbar.chat-tokens-progress trough {
+  background: alpha(@border, 0.15);
+  border-radius: 2px;
+  min-height: 4px;
+}
+
+progressbar.chat-token-progress progress,
+progressbar.chat-tokens-progress progress {
+  background: alpha(@selected-text, 0.6);
+  border-radius: 2px;
+  min-height: 4px;
+}
+
+progressbar.chat-token-progress.chat-token-warning progress,
+progressbar.chat-tokens-progress.chat-token-warning progress {
+  background: rgb(251, 191, 36);
+}
+
+progressbar.chat-token-progress.chat-token-danger progress,
+progressbar.chat-tokens-progress.chat-token-danger progress {
+  background: rgb(239, 68, 68);
+}
+
+/* Contexto del chat */
+box.chat-context-panel {
+  background: transparent;
+  border-right: 1px solid alpha(@border, 0.2);
+}
+
+box.chat-context-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid alpha(@border, 0.15);
+}
+
+label.chat-context-title {
+  font-size: 0.85em;
+  font-weight: 500;
+  color: alpha(@text, 0.8);
+}
+
+scrolledwindow.chat-context-scroll {
+  background: transparent;
+  border: none;
+}
+
+listbox.chat-context-list {
+  background: transparent;
+  padding: 8px 12px;
+}
+
+listbox.chat-context-list > row {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  margin: 0;
+}
+
+box.chat-context-entry {
+  background: alpha(@border, 0.08);
+  border: 1px solid alpha(@border, 0.2);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+box.chat-context-entry:hover {
+  background: alpha(@selected-text, 0.1);
+  border-color: alpha(@selected-text, 0.3);
+}
+
+label.chat-context-icon {
+  font-size: 0.8em;
+  margin-right: 4px;
+  color: alpha(@text, 0.6);
+}
+
+label.chat-context-label {
+  font-size: 0.8em;
+  color: @text;
+}
+
+label.chat-context-empty {
+  font-size: 0.75em;
+  color: alpha(@text, 0.5);
+  padding: 12px 0;
+}
+
+box.chat-context-actions {
+  padding: 8px;
+  border-top: 1px solid alpha(@border, 0.15);
+}
+
+button.chat-context-action {
+  background: transparent;
+  border: 1px solid alpha(@border, 0.2);
+  border-radius: 6px;
+  padding: 6px;
+  min-width: 28px;
+  min-height: 28px;
+}
+
+button.chat-context-action:hover {
+  background: alpha(@selected-text, 0.1);
+  border-color: alpha(@selected-text, 0.3);
+}
+
+button.chat-context-remove {
+  background: transparent;
+  border: 1px solid alpha(@border, 0.2);
+  border-radius: 4px;
+  padding: 4px;
+  min-width: 20px;
+  min-height: 20px;
+}
+
+button.chat-context-remove:hover {
+  background: alpha(@selected-text, 0.1);
+  border-color: alpha(@selected-text, 0.3);
+}
+
+/* Historial del chat */
+scrolledwindow.chat-history-scroll {
+  background: transparent;
+  border: none;
+}
+
+listbox.chat-history-list {
+  background: transparent;
+  padding: 24px 12px 36px 12px;
+}
+
+listbox.chat-history-list > row {
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+box.chat-row {
+  padding: 0;
+  gap: 8px;
+}
+
+box.chat-row-user {
+  margin-left: 20%;
+}
+
+box.chat-row-assistant {
+  margin-right: 20%;
+}
+
+box.chat-row-system {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+label.chat-avatar {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 4px;
+  font-size: 0.75em;
+  color: alpha(@text, 0.5);
+  align-self: start;
+}
+
+label.chat-avatar-user {
+  color: alpha(@selected-text, 0.8);
+}
+
+label.chat-avatar-assistant {
+  color: alpha(@text, 0.7);
+}
+
+label.chat-avatar-system {
+  color: alpha(@text, 0.5);
+}
+
+box.chat-bubble {
+  padding: 8px 12px;
+  border-radius: 8px;
+  max-width: 560px;
+  background: alpha(@border, 0.1);
+  border: 1px solid alpha(@border, 0.2);
+}
+
+box.chat-bubble-user {
+  background: alpha(@selected-text, 0.15);
+  border: 1px solid alpha(@selected-text, 0.3);
+}
+
+box.chat-bubble-assistant {
+  background: alpha(@border, 0.08);
+  border: 1px solid alpha(@border, 0.2);
+}
+
+box.chat-bubble-system {
+  background: transparent;
+  border: 1px dashed alpha(@border, 0.3);
+}
+
+box.chat-bubble-typing {
+  border-style: dashed;
+  animation: chatTypingPulse 1.4s ease-in-out infinite;
+}
+
+label.chat-meta {
+  font-size: 0.65em;
+  color: alpha(@text, 0.5);
+  margin-bottom: 2px;
+}
+
+label.chat-message {
+  color: @text;
+  font-family: monospace;
+  font-size: 9.5pt;
+  line-height: 1.4;
+}
+
+label.chat-message-system {
+  font-style: italic;
+  color: alpha(@text, 0.7);
+}
+
+label.chat-typing-indicator {
+  font-size: 0.85em;
+  color: alpha(@text, 0.7);
+  font-style: italic;
+}
+
+.typing-indicator {
+  opacity: 0.85;
+}
+
+/* Área de entrada */
+box.chat-input-bar,
+box.chat-input-container {
+  padding: 12px 16px;
+  background: transparent;
+  border-top: 1px solid alpha(@border, 0.2);
+}
+
+/* Wrapper del input - Estilizado minimalista */
+box.chat-input-wrapper {
+  background-color: transparent;
+  border: 1px solid alpha(@border, 0.3);
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-right: 8px;
+  min-height: 36px;
+}
+
+box.chat-input-wrapper:focus-within {
+  border-color: alpha(@selected-text, 0.6);
+  background-color: alpha(@border, 0.05);
+}
+
+/* ScrolledWindow dentro del wrapper */
+box.chat-input-wrapper > scrolledwindow {
+  background-color: transparent;
+  background: transparent;
+  border: none;
+  min-height: 32px;
+}
+
+box.chat-input-wrapper > scrolledwindow > undershoot,
+box.chat-input-wrapper > scrolledwindow > overshoot {
+  background: none;
+}
+
+/* TextView del chat input */
+textview.chat-input,
+textview.chat-input.view {
+  background-color: transparent;
+  background: transparent;
+  color: @text;
+  padding: 6px 8px;
+  font-size: 9.5pt;
+  font-family: monospace;
+  border: none;
+  min-height: 32px;
+  caret-color: @text;
+}
+
+textview.chat-input text,
+textview.chat-input.view text {
+  background-color: transparent;
+  background: transparent;
+  color: @text;
+  caret-color: @text;
+}
+
+textview.chat-input:focus,
+textview.chat-input.view:focus {
+  outline: none;
+  background-color: transparent;
+  background: transparent;
+}
+
+button.chat-send-button {
+  background: alpha(@selected-text, 0.15);
+  border: 1px solid alpha(@selected-text, 0.3);
+  border-radius: 6px;
+  padding: 0 16px;
+  color: @text;
+  font-weight: 500;
+  font-size: 9pt;
+  min-width: 70px;
+  min-height: 36px;
+  margin-left: 0;
+}
+
+button.chat-send-button:hover {
+  background: alpha(@selected-text, 0.25);
+  border-color: alpha(@selected-text, 0.4);
+}
+
+button.chat-send-button:active {
+  background: alpha(@selected-text, 0.3);
+}
+
+button.chat-send-button image {
+  margin-right: 4px;
+}
+
+button.chat-send-button label {
+  color: @text;
+}
+
+@keyframes chatTypingPulse {
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}

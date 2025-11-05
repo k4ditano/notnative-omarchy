@@ -88,6 +88,7 @@ impl CommandParser {
         // Comandos de una sola tecla
         match key {
             "i" => EditorAction::ChangeMode(EditorMode::Insert),
+            "a" => EditorAction::ChangeMode(EditorMode::ChatAI),
             ":" => EditorAction::ChangeMode(EditorMode::Command),
             "v" => EditorAction::ChangeMode(EditorMode::Visual),
             "t" => EditorAction::OpenSidebar,

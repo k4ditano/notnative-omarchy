@@ -1,3 +1,4 @@
+use chrono::Local;
 use gtk::glib;
 use relm4::gtk::prelude::*;
 use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, component, gtk};
@@ -9,6 +10,7 @@ use crate::core::{
     NotesConfig, NotesDatabase, NotesDirectory, StyleType, extract_all_tags,
 };
 use crate::i18n::{I18n, Language};
+use crate::mcp::{MCPToolCall, MCPToolResult};
 
 #[derive(Debug, Clone)]
 struct ThemeColors {
@@ -149,6 +151,25 @@ pub struct MainApp {
     // Gestión de playlists
     playlist_current_list: gtk::ListBox,
     playlist_saved_list: gtk::ListBox,
+    // Chat AI
+    chat_session: Rc<RefCell<Option<crate::ai_chat::ChatSession>>>,
+    chat_session_id: Rc<RefCell<Option<i64>>>,
+    content_stack: gtk::Stack,
+    chat_ai_container: gtk::Box,
+    chat_split_view: gtk::Paned,
+    chat_context_list: gtk::ListBox,
+    chat_history_scroll: gtk::ScrolledWindow,
+    chat_history_list: gtk::ListBox,
+    chat_input_view: gtk::TextView,
+    chat_input_buffer: gtk::TextBuffer,
+    chat_send_button: gtk::Button,
+    chat_clear_button: gtk::Button,
+    chat_attach_button: gtk::Button,
+    chat_model_label: gtk::Label,
+    chat_tokens_progress: gtk::ProgressBar,
+    // MCP (Model Context Protocol)
+    mcp_executor: Rc<RefCell<crate::mcp::MCPToolExecutor>>,
+    mcp_registry: crate::mcp::MCPToolRegistry,
 }
 
 #[derive(Debug)]
@@ -253,6 +274,18 @@ pub enum AppMsg {
     MusicDeletePlaylist(String),                   // Eliminar playlist guardada
     MusicCheckNextSong,                            // Verificar si debe reproducir siguiente
     TogglePlaylistView,                            // Mostrar/ocultar vista de playlist
+    // Mensajes del Chat AI
+    EnterChatMode,                 // Entrar al modo Chat AI
+    ExitChatMode,                  // Salir del modo Chat AI
+    SendChatMessage(String),       // Enviar mensaje a la IA
+    ReceiveChatResponse(String),   // Recibir respuesta de la IA
+    ShowAttachNoteDialog,          // Mostrar diálogo para adjuntar nota
+    AttachNoteToContext(String),   // Adjuntar nota al contexto
+    DetachNoteFromContext(String), // Quitar nota del contexto
+    ClearChatContext,              // Limpiar contexto
+    ClearChatHistory,              // Borrar historial de chat de la BD
+    ConfirmClearChatHistory,       // Confirmar borrado (después del diálogo)
+    UpdateChatTokenCount,          // Actualizar contador de tokens
 }
 
 #[component(pub)]
@@ -371,24 +404,12 @@ impl SimpleComponent for MainApp {
                         set_hexpand: true,
                         set_vexpand: true,
 
-                        append = &gtk::ScrolledWindow {
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_policy: (gtk::PolicyType::Automatic, gtk::PolicyType::Automatic),
-
-                        #[wrap(Some)]
-                        set_child = text_view = &gtk::TextView::builder()
-                            .monospace(true)
-                            .wrap_mode(gtk::WrapMode::WordChar)
-                            .editable(true)
-                            .cursor_visible(true)
-                            .accepts_tab(false)
-                            .left_margin(16)
-                            .right_margin(16)
-                            .top_margin(12)
-                            .bottom_margin(12)
-                            .build(),
-                    },
+                        append = content_stack = &gtk::Stack {
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_transition_type: gtk::StackTransitionType::Crossfade,
+                            set_transition_duration: 200,
+                        },
 
                         append = status_bar = &gtk::Box {
                             set_orientation: gtk::Orientation::Horizontal,
@@ -565,7 +586,31 @@ impl SimpleComponent for MainApp {
     ) -> ComponentParts<Self> {
         let widgets = view_output!();
 
-        let text_buffer = widgets.text_view.buffer();
+        // Crear el TextView manualmente (necesario porque el de la macro no se puede usar)
+        let text_view_actual = gtk::TextView::builder()
+            .monospace(true)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .editable(true)
+            .cursor_visible(true)
+            .accepts_tab(false)
+            .left_margin(16)
+            .right_margin(16)
+            .top_margin(12)
+            .bottom_margin(12)
+            .build();
+
+        // Agregar el editor al Stack
+        let editor_scroll = gtk::ScrolledWindow::new();
+        editor_scroll.set_hexpand(true);
+        editor_scroll.set_vexpand(true);
+        editor_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        editor_scroll.set_child(Some(&text_view_actual));
+        widgets
+            .content_stack
+            .add_named(&editor_scroll, Some("editor"));
+        widgets.content_stack.set_visible_child_name("editor");
+
+        let text_buffer = text_view_actual.buffer();
         let mode = Rc::new(RefCell::new(EditorMode::Normal));
 
         // Inicializar directorio de notas (por defecto ~/.local/share/notnative/notes)
@@ -574,6 +619,20 @@ impl SimpleComponent for MainApp {
         // Inicializar base de datos
         let db_path = notes_dir.db_path();
         let notes_db = NotesDatabase::new(&db_path).expect("No se pudo crear la base de datos");
+
+        // Inicializar sistema MCP (Model Context Protocol)
+        // Crear wrapper Rc<RefCell> para NotesDatabase (necesario para compartir en async)
+        let notes_db_rc = Rc::new(RefCell::new(notes_db.clone_connection()));
+        let mcp_executor = Rc::new(RefCell::new(crate::mcp::MCPToolExecutor::new(
+            notes_dir.clone(),
+            notes_db_rc,
+        )));
+        // Usar solo herramientas core para mejor rendimiento y precisión
+        let mcp_registry = crate::mcp::MCPToolRegistry::new_core();
+        println!(
+            "Sistema MCP inicializado con {} herramientas core",
+            mcp_registry.get_tools().len()
+        );
 
         // Cargar configuración
         let config_path = NotesConfig::default_path();
@@ -718,7 +777,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         scrolled.set_propagate_natural_width(true);
 
         let completion_popover = gtk::Popover::new();
-        completion_popover.set_parent(&widgets.text_view);
+        completion_popover.set_parent(&text_view_actual);
         completion_popover.add_css_class("tag-completion");
         completion_popover.set_autohide(false);
         completion_popover.set_size_request(200, 160); // Tamaño fijo para evitar recalculos
@@ -1187,6 +1246,302 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             }
         ));
 
+        // ==================== CHAT AI ====================
+
+        // Contenedor principal del chat
+        let chat_ai_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        chat_ai_container.set_vexpand(true);
+        chat_ai_container.set_hexpand(true);
+        chat_ai_container.add_css_class("chat-ai-root");
+
+        // Header con información del modelo
+        let chat_header = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+        chat_header.set_margin_all(16);
+        chat_header.add_css_class("chat-ai-header");
+
+        let chat_header_icon = gtk::Label::new(Some("🤖"));
+        chat_header_icon.add_css_class("chat-header-icon");
+        chat_header.append(&chat_header_icon);
+
+        let chat_header_content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        chat_header_content.add_css_class("chat-header-content");
+
+        let chat_model_label = gtk::Label::new(Some("Modelo: OpenAI GPT-4"));
+        chat_model_label.add_css_class("chat-model-label");
+        chat_model_label.add_css_class("chat-header-title");
+        chat_model_label.set_xalign(0.0);
+        chat_header_content.append(&chat_model_label);
+
+        let chat_header_subtitle =
+            gtk::Label::new(Some("Combina tus notas con el asistente en tiempo real"));
+        chat_header_subtitle.add_css_class("chat-header-subtitle");
+        chat_header_subtitle.set_xalign(0.0);
+        chat_header_content.append(&chat_header_subtitle);
+
+        chat_header.append(&chat_header_content);
+
+        let chat_header_right = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        chat_header_right.add_css_class("chat-header-right");
+        chat_header_right.set_hexpand(true);
+        chat_header_right.set_halign(gtk::Align::End);
+
+        let chat_tokens_progress = gtk::ProgressBar::new();
+        chat_tokens_progress.add_css_class("chat-token-progress");
+        chat_tokens_progress.add_css_class("chat-tokens-progress");
+        chat_tokens_progress.set_hexpand(false);
+        chat_tokens_progress.set_valign(gtk::Align::Center);
+        chat_tokens_progress.set_text(Some("Tokens: 0 / 4096"));
+        chat_tokens_progress.set_show_text(true);
+        chat_tokens_progress.set_width_request(220);
+        chat_header_right.append(&chat_tokens_progress);
+
+        chat_header.append(&chat_header_right);
+        chat_ai_container.append(&chat_header);
+
+        // Split view principal del chat
+        let chat_split_view = gtk::Paned::new(gtk::Orientation::Horizontal);
+        chat_split_view.set_position(250);
+        chat_split_view.set_vexpand(true);
+        chat_split_view.set_wide_handle(false);
+        chat_split_view.add_css_class("chat-ai-split");
+
+        // Panel izquierdo: Contexto (notas adjuntas) - MISMO DISEÑO QUE SIDEBAR NORMAL
+        let context_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        context_box.add_css_class("sidebar");
+        context_box.add_css_class("chat-context-panel");
+        context_box.set_width_request(200);
+
+        // Header con botones (igual que el sidebar normal)
+        let context_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        context_header.set_margin_all(12);
+        context_header.add_css_class("chat-context-header");
+
+        let context_label = gtk::Label::builder()
+            .label("Contexto")
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        context_label.add_css_class("heading");
+        context_label.add_css_class("chat-context-title");
+        context_header.append(&context_label);
+        context_box.append(&context_header);
+
+        // Scroll con ListBox (igual que el sidebar normal)
+        let context_scroll = gtk::ScrolledWindow::new();
+        context_scroll.set_vexpand(true);
+        context_scroll.set_hexpand(true);
+        context_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        context_scroll.add_css_class("chat-context-scroll");
+
+        let chat_context_list = gtk::ListBox::new();
+        chat_context_list.add_css_class("navigation-sidebar");
+        chat_context_list.add_css_class("chat-context-list");
+        chat_context_list.set_selection_mode(gtk::SelectionMode::None);
+        context_scroll.set_child(Some(&chat_context_list));
+        context_box.append(&context_scroll);
+
+        // Botones como iconos minimalistas en la parte baja
+        let buttons_box = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+        buttons_box.set_halign(gtk::Align::Center);
+        buttons_box.set_margin_start(8);
+        buttons_box.set_margin_end(8);
+        buttons_box.set_margin_bottom(12);
+        buttons_box.add_css_class("chat-context-actions");
+
+        let chat_attach_button = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Adjuntar nota actual")
+            .build();
+        chat_attach_button.add_css_class("flat");
+        chat_attach_button.add_css_class("circular");
+        chat_attach_button.add_css_class("chat-context-action");
+        chat_attach_button.connect_clicked(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move |_| {
+                sender.input(AppMsg::ShowAttachNoteDialog);
+            }
+        ));
+        buttons_box.append(&chat_attach_button);
+
+        let chat_clear_button = gtk::Button::builder()
+            .icon_name("edit-clear-symbolic")
+            .tooltip_text("Limpiar contexto")
+            .build();
+        chat_clear_button.add_css_class("flat");
+        chat_clear_button.add_css_class("circular");
+        chat_clear_button.add_css_class("chat-context-action");
+        chat_clear_button.connect_clicked(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move |_| {
+                sender.input(AppMsg::ClearChatContext);
+            }
+        ));
+        buttons_box.append(&chat_clear_button);
+
+        let chat_history_button = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Borrar historial")
+            .build();
+        chat_history_button.add_css_class("flat");
+        chat_history_button.add_css_class("circular");
+        chat_history_button.add_css_class("chat-context-action");
+        chat_history_button.connect_clicked(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move |_| {
+                sender.input(AppMsg::ClearChatHistory);
+            }
+        ));
+        buttons_box.append(&chat_history_button);
+
+        context_box.append(&buttons_box);
+
+        chat_split_view.set_start_child(Some(&context_box));
+
+        // Panel derecho: Chat (historial + input)
+        let chat_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        chat_box.add_css_class("chat-area");
+        chat_box.add_css_class("chat-main");
+        chat_box.set_margin_all(0);
+
+        // Historial de mensajes
+        let history_scroll = gtk::ScrolledWindow::new();
+        history_scroll.set_vexpand(true);
+        history_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        history_scroll.add_css_class("chat-history-scroll");
+
+        let chat_history_list = gtk::ListBox::new();
+        chat_history_list.add_css_class("chat-history-list");
+        chat_history_list.set_selection_mode(gtk::SelectionMode::None);
+        history_scroll.set_child(Some(&chat_history_list));
+        chat_box.append(&history_scroll);
+
+        // Input del usuario con diseño consistente tipo entry
+        let input_area = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        input_area.set_margin_all(0);
+        input_area.add_css_class("chat-input-container");
+        input_area.add_css_class("chat-input-bar");
+
+        // Box que simula el borde de entry (más fácil de estilizar que Frame)
+        let input_wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        input_wrapper.set_hexpand(true);
+        input_wrapper.add_css_class("chat-input-wrapper");
+
+        // ScrolledWindow interno
+        let input_scroll = gtk::ScrolledWindow::new();
+        input_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        input_scroll.set_hexpand(true);
+        input_scroll.set_vexpand(false);
+        input_scroll.set_min_content_height(80);
+        input_scroll.set_max_content_height(200);
+        input_scroll.set_overlay_scrolling(false);
+        input_scroll.add_css_class("chat-input-scroll");
+
+        let chat_input_view = gtk::TextView::new();
+        let chat_input_buffer = chat_input_view.buffer();
+        chat_input_view.set_wrap_mode(gtk::WrapMode::WordChar);
+        chat_input_view.set_accepts_tab(false);
+        chat_input_view.set_hexpand(true);
+        chat_input_view.set_vexpand(false);
+        chat_input_view.add_css_class("chat-input");
+
+        // Agregar placeholder inicial
+        chat_input_buffer.set_text("Escribe tu mensaje aquí...");
+
+        // Limpiar placeholder al hacer focus
+        let focus_controller = gtk::EventControllerFocus::new();
+        focus_controller.connect_enter(gtk::glib::clone!(
+            #[strong]
+            chat_input_buffer,
+            move |_| {
+                let start = chat_input_buffer.start_iter();
+                let end = chat_input_buffer.end_iter();
+                let text = chat_input_buffer.text(&start, &end, false).to_string();
+                if text == "Escribe tu mensaje aquí..." {
+                    chat_input_buffer.set_text("");
+                }
+            }
+        ));
+        chat_input_view.add_controller(focus_controller);
+
+        input_scroll.set_child(Some(&chat_input_view));
+        input_wrapper.append(&input_scroll);
+        input_area.append(&input_wrapper);
+
+        let chat_send_button = gtk::Button::builder()
+            .label("Enviar")
+            .icon_name("mail-send-symbolic")
+            .build();
+        chat_send_button.set_valign(gtk::Align::Center);
+        chat_send_button.add_css_class("chat-send-button");
+        chat_send_button.add_css_class("chat-action-primary");
+        chat_send_button.connect_clicked(gtk::glib::clone!(
+            #[strong]
+            sender,
+            #[strong]
+            chat_input_buffer,
+            move |_| {
+                let start = chat_input_buffer.start_iter();
+                let end = chat_input_buffer.end_iter();
+                let text = chat_input_buffer.text(&start, &end, false).to_string();
+
+                if !text.trim().is_empty() && text != "Escribe tu mensaje aquí..." {
+                    sender.input(AppMsg::SendChatMessage(text));
+                }
+            }
+        ));
+        input_area.append(&chat_send_button);
+
+        chat_box.append(&input_area);
+
+        chat_split_view.set_end_child(Some(&chat_box));
+        chat_ai_container.append(&chat_split_view);
+
+        // Controlador de teclado para el modo Chat AI
+        let chat_key_controller = gtk::EventControllerKey::new();
+        chat_key_controller.connect_key_pressed(gtk::glib::clone!(
+            #[strong]
+            sender,
+            #[strong]
+            mode,
+            #[strong]
+            chat_input_view,
+            #[strong]
+            text_view_actual,
+            move |_controller, keyval, _keycode, _modifiers| {
+                let key_name = keyval.name().map(|s| s.to_string()).unwrap_or_default();
+
+                // Solo procesar si no estamos en el input del chat
+                if chat_input_view.has_focus() {
+                    return gtk::glib::Propagation::Proceed;
+                }
+
+                // ESC: Salir del modo Chat AI y volver a Normal
+                if key_name == "Escape" {
+                    sender.input(AppMsg::ExitChatMode);
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // i: Salir del modo Chat AI y entrar a Insert
+                if key_name == "i" {
+                    // Cambiar a Insert y luego salir del chat
+                    *mode.borrow_mut() = crate::core::editor_mode::EditorMode::Insert;
+                    sender.input(AppMsg::ExitChatMode);
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                gtk::glib::Propagation::Proceed
+            }
+        ));
+        chat_ai_container.add_controller(chat_key_controller);
+
+        // Agregar el chat al Stack
+        widgets
+            .content_stack
+            .add_named(&chat_ai_container, Some("chat"));
+
         let model = MainApp {
             theme,
             buffer: initial_buffer,
@@ -1204,7 +1559,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             has_unsaved_changes: false,
             markdown_enabled: true, // Ahora con parser robusto usando offsets de pulldown-cmark
             bit8_mode: false,
-            text_view: widgets.text_view.clone(),
+            text_view: text_view_actual.clone(),
             split_view: widgets.split_view.clone(),
             notes_list: widgets.notes_list.clone(),
             sidebar_visible: false,
@@ -1258,6 +1613,23 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             music_play_pause_btn,
             playlist_current_list,
             playlist_saved_list,
+            chat_session: Rc::new(RefCell::new(None)),
+            chat_session_id: Rc::new(RefCell::new(None)),
+            content_stack: widgets.content_stack.clone(),
+            chat_ai_container,
+            chat_split_view,
+            chat_context_list,
+            chat_history_scroll: history_scroll.clone(),
+            chat_history_list,
+            chat_input_view,
+            chat_input_buffer,
+            chat_send_button,
+            chat_clear_button,
+            chat_attach_button,
+            chat_model_label,
+            chat_tokens_progress,
+            mcp_executor,
+            mcp_registry,
         };
 
         // Guardar el sender en el modelo
@@ -1519,7 +1891,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 }
             }
         ));
-        widgets.text_view.add_controller(key_controller);
+        text_view_actual.add_controller(key_controller);
 
         // Conectar señales de inserción y eliminación del TextBuffer para mantener nuestro NoteBuffer sincronizado
         let is_syncing_to_gtk_insert = model.is_syncing_to_gtk.clone();
@@ -1562,7 +1934,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         ));
 
         let link_spans = model.link_spans.clone();
-        let click_text_view = widgets.text_view.clone();
+        let click_text_view = text_view_actual.clone();
         // Conectar eventos de clic para actualizar posición del cursor o abrir enlaces/tags
         let click_controller = gtk::GestureClick::new();
         let tag_spans_for_click = model.tag_spans.clone();
@@ -1639,11 +2011,11 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 .map_err(|e| eprintln!("Panic capturado en click_controller: {:?}", e));
             }
         ));
-        widgets.text_view.add_controller(click_controller);
+        text_view_actual.add_controller(click_controller);
 
         // Agregar controlador de movimiento del mouse para cambiar cursor sobre links y tags
         let motion_controller = gtk::EventControllerMotion::new();
-        let motion_text_view = widgets.text_view.clone();
+        let motion_text_view = text_view_actual.clone();
         let tag_spans_for_motion = model.tag_spans.clone();
         motion_controller.connect_motion(gtk::glib::clone!(
             #[strong(rename_to = text_view)]
@@ -1693,7 +2065,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 }
             }
         ));
-        widgets.text_view.add_controller(motion_controller);
+        text_view_actual.add_controller(motion_controller);
 
         // Configurar DropTarget para detectar cuando se arrastra contenido
         let drop_target = gtk::DropTarget::new(gtk::glib::Type::STRING, gtk::gdk::DragAction::COPY);
@@ -1710,7 +2082,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 }
             }
         ));
-        widgets.text_view.add_controller(drop_target);
+        text_view_actual.add_controller(drop_target);
 
         // Conectar eventos del search_entry con debounce
         let search_generation: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
@@ -2213,7 +2585,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         widgets.notes_list.add_controller(notes_key_controller);
 
         // Dar foco inicial al TextView para que detecte teclas inmediatamente
-        widgets.text_view.grab_focus();
+        text_view_actual.grab_focus();
 
         // Timer para verificar si debe reproducir la siguiente canción (cada 2 segundos)
         let sender_clone = sender.clone();
@@ -2255,19 +2627,40 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 self.apply_8bit_font();
             }
             AppMsg::ToggleSidebar => {
-                self.sidebar_visible = !self.sidebar_visible;
-                let target_position = if self.sidebar_visible { 250 } else { 0 };
-                self.animate_sidebar(target_position);
+                let mode = *self.mode.borrow();
 
-                // Si estamos cerrando el sidebar, devolver foco al editor
-                if !self.sidebar_visible {
-                    let text_view = self.text_view.clone();
-                    gtk::glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(160),
-                        move || {
-                            text_view.grab_focus();
-                        },
-                    );
+                // En modo Chat AI, toggle el sidebar de contexto
+                if mode == EditorMode::ChatAI {
+                    let current_pos = self.chat_split_view.position();
+                    let target_position = if current_pos > 0 { 0 } else { 250 };
+                    self.chat_split_view.set_position(target_position);
+
+                    if target_position == 0 {
+                        // Dar foco al input del chat
+                        let chat_input = self.chat_input_view.clone();
+                        gtk::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(160),
+                            move || {
+                                chat_input.grab_focus();
+                            },
+                        );
+                    }
+                } else {
+                    // En modo Normal, toggle el sidebar principal
+                    self.sidebar_visible = !self.sidebar_visible;
+                    let target_position = if self.sidebar_visible { 250 } else { 0 };
+                    self.animate_sidebar(target_position);
+
+                    // Si estamos cerrando el sidebar, devolver foco al editor
+                    if !self.sidebar_visible {
+                        let text_view = self.text_view.clone();
+                        gtk::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(160),
+                            move || {
+                                text_view.grab_focus();
+                            },
+                        );
+                    }
                 }
             }
             AppMsg::OpenSidebarAndFocus => {
@@ -2325,6 +2718,12 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     *self.current_tag_prefix.borrow_mut() = None;
                 }
 
+                // Atajo global: Ctrl+Shift+A para entrar al Chat AI desde cualquier modo
+                if modifiers.ctrl && modifiers.shift && key == "a" {
+                    sender.input(AppMsg::EnterChatMode);
+                    return;
+                }
+
                 let action = match current_mode {
                     EditorMode::Normal => self.command_parser.parse_normal_mode(&key, modifiers),
                     EditorMode::Insert => self.command_parser.parse_insert_mode(&key, modifiers),
@@ -2334,6 +2733,27 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         EditorAction::None
                     }
                     EditorMode::Visual => EditorAction::None,
+                    EditorMode::ChatAI => {
+                        // En modo Chat AI, Escape sale del modo
+                        if key == "Escape" {
+                            sender.input(AppMsg::ExitChatMode);
+                            return;
+                        }
+                        // Enter envía el mensaje
+                        if key == "Return" || key == "Enter" {
+                            if !modifiers.shift {
+                                let start = self.chat_input_buffer.start_iter();
+                                let end = self.chat_input_buffer.end_iter();
+                                let text =
+                                    self.chat_input_buffer.text(&start, &end, false).to_string();
+                                if !text.trim().is_empty() {
+                                    sender.input(AppMsg::SendChatMessage(text));
+                                }
+                                return;
+                            }
+                        }
+                        EditorAction::None
+                    }
                 };
 
                 if action != EditorAction::None {
@@ -3424,10 +3844,19 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
             AppMsg::MusicCheckNextSong => {
                 // Verificar si debe reproducir la siguiente canción
+                // Usar catch_unwind para prevenir panics del reproductor
                 if let Some(player) = self.music_player.borrow().as_ref() {
-                    if player.check_should_play_next() {
-                        sender.input(AppMsg::MusicNextSong);
+                    // Intentar verificar el estado del reproductor de forma segura
+                    if let Ok(should_play) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            player.check_should_play_next()
+                        }))
+                    {
+                        if should_play {
+                            sender.input(AppMsg::MusicNextSong);
+                        }
                     }
+                    // Si hay un panic, simplemente lo ignoramos y continuamos
                 }
             }
 
@@ -3587,11 +4016,619 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     }
                 }
             }
+
+            // ==================== CHAT AI HANDLERS ====================
+            AppMsg::EnterChatMode => {
+                println!("🤖 Entrando al modo Chat AI...");
+
+                // Cambiar modo
+                *self.mode.borrow_mut() = EditorMode::ChatAI;
+                self.update_status_bar(&sender);
+
+                // Ocultar sidebar principal
+                self.split_view.set_position(0);
+
+                // Mostrar sidebar de contexto en el chat
+                self.chat_split_view.set_position(250);
+
+                // Cambiar a la página del chat en el Stack
+                self.content_stack.set_visible_child_name("chat");
+
+                // Limpiar historial visual
+                while let Some(child) = self.chat_history_list.first_child() {
+                    self.chat_history_list.remove(&child);
+                }
+
+                // Crear o cargar sesión con configuración actualizada
+                let ai_config = self.notes_config.get_ai_config();
+                let model_config = crate::ai_chat::AIModelConfig {
+                    provider: match ai_config.provider.as_str() {
+                        "anthropic" => crate::ai_chat::AIProvider::Anthropic,
+                        "ollama" => crate::ai_chat::AIProvider::Ollama,
+                        _ => crate::ai_chat::AIProvider::OpenAI,
+                    },
+                    model: ai_config.model.clone(),
+                    max_tokens: ai_config.max_tokens as usize,
+                    temperature: ai_config.temperature,
+                };
+
+                // Actualizar label del modelo
+                self.chat_model_label.set_text(&format!(
+                    "{} - {} (temp: {:.1})",
+                    ai_config.provider, ai_config.model, ai_config.temperature
+                ));
+
+                // Intentar cargar la última sesión si save_history está activado
+                if ai_config.save_history {
+                    if let Ok(Some(session_id)) = self.notes_db.get_latest_chat_session() {
+                        println!("📂 Cargando sesión #{}", session_id);
+                        *self.chat_session_id.borrow_mut() = Some(session_id);
+
+                        // Cargar mensajes de la sesión
+                        if let Ok(messages) = self.notes_db.get_chat_messages(session_id) {
+                            let mut session =
+                                crate::ai_chat::ChatSession::new(model_config.clone());
+
+                            for (role_str, content, _timestamp) in messages {
+                                let role = match role_str.as_str() {
+                                    "user" => crate::ai_chat::MessageRole::User,
+                                    "assistant" => crate::ai_chat::MessageRole::Assistant,
+                                    _ => crate::ai_chat::MessageRole::System,
+                                };
+
+                                session.add_message(role.clone(), content.clone());
+                                self.append_chat_message(role, &content);
+                            }
+
+                            // Cargar notas del contexto
+                            if let Ok(notes_meta) = self.notes_db.get_chat_context_notes(session_id)
+                            {
+                                for note_meta in notes_meta {
+                                    if let Ok(Some(note_file)) =
+                                        self.notes_dir.find_note(&note_meta.name)
+                                    {
+                                        session.attach_note(note_file);
+                                    }
+                                }
+                            }
+
+                            *self.chat_session.borrow_mut() = Some(session);
+                        }
+                    } else {
+                        // Crear nueva sesión en BD
+                        if let Ok(session_id) = self.notes_db.create_chat_session(
+                            &ai_config.model,
+                            &ai_config.provider,
+                            ai_config.temperature,
+                            ai_config.max_tokens,
+                        ) {
+                            println!("✨ Nueva sesión creada: #{}", session_id);
+                            *self.chat_session_id.borrow_mut() = Some(session_id);
+                            *self.chat_session.borrow_mut() =
+                                Some(crate::ai_chat::ChatSession::new(model_config.clone()));
+                        }
+                    }
+                } else {
+                    // Si save_history está desactivado, crear sesión en memoria
+                    *self.chat_session.borrow_mut() =
+                        Some(crate::ai_chat::ChatSession::new(model_config.clone()));
+                    *self.chat_session_id.borrow_mut() = None;
+                }
+
+                // Adjuntar nota actual al contexto
+                if let Some(note) = &self.current_note {
+                    {
+                        if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                            session.attach_note(note.clone());
+
+                            // Guardar en BD si corresponde
+                            if let (Some(session_id), Some(note_id)) =
+                                (*self.chat_session_id.borrow(), self.get_current_note_id())
+                            {
+                                let _ = self.notes_db.attach_note_to_chat(session_id, note_id);
+                            }
+                        }
+                    } // ← Libera borrow_mut aquí
+                }
+
+                self.refresh_context_list();
+                sender.input(AppMsg::UpdateChatTokenCount);
+                self.chat_input_view.grab_focus();
+            }
+
+            AppMsg::ExitChatMode => {
+                println!("👋 Saliendo del modo Chat AI...");
+
+                *self.mode.borrow_mut() = EditorMode::Normal;
+                self.update_status_bar(&sender);
+
+                // Restaurar sidebar principal si estaba visible
+                if self.sidebar_visible {
+                    self.split_view.set_position(250);
+                }
+
+                // Ocultar sidebar de contexto del chat
+                self.chat_split_view.set_position(0);
+
+                // Cambiar a la página del editor en el Stack
+                self.content_stack.set_visible_child_name("editor");
+                self.text_view.grab_focus();
+            }
+
+            AppMsg::SendChatMessage(message) => {
+                println!(
+                    "💬 Enviando mensaje: {}",
+                    message.chars().take(50).collect::<String>()
+                );
+
+                if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                    // Agregar mensaje del usuario
+                    session.add_message(crate::ai_chat::MessageRole::User, message.clone());
+
+                    // Guardar mensaje en BD si hay sesión activa
+                    if let Some(session_id) = *self.chat_session_id.borrow() {
+                        let _ = self
+                            .notes_db
+                            .save_chat_message(session_id, "user", &message);
+                    }
+
+                    // Mostrar en UI
+                    self.append_chat_message(crate::ai_chat::MessageRole::User, &message);
+
+                    // Limpiar input
+                    self.chat_input_buffer.set_text("");
+
+                    // Mostrar indicador de "escribiendo..."
+                    self.append_chat_typing_indicator();
+
+                    // Enviar a la API (async)
+                    let session_clone = session.clone();
+                    let sender_clone = sender.clone();
+
+                    // Obtener API key de la configuración
+                    let api_key = self
+                        .notes_config
+                        .get_ai_config()
+                        .api_key
+                        .clone()
+                        .unwrap_or_else(|| std::env::var("OPENAI_API_KEY").unwrap_or_default());
+
+                    if api_key.is_empty() {
+                        sender.input(AppMsg::ReceiveChatResponse(
+                            "❌ Error: No se ha configurado la API Key. \
+                             Ve a Ajustes > AI Assistant para configurarla."
+                                .to_string(),
+                        ));
+                        return;
+                    }
+
+                    // Clonar registry para uso en async
+                    let mcp_registry = self.mcp_registry.clone();
+                    let mcp_executor = self.mcp_executor.clone();
+
+                    gtk::glib::spawn_future_local(async move {
+                        let context = session_clone.build_context().unwrap_or_default();
+
+                        // Debug: mostrar contexto
+                        if !context.is_empty() {
+                            println!(
+                                "📋 Contexto construido ({} chars):\n{}",
+                                context.len(),
+                                context.chars().take(300).collect::<String>()
+                            );
+                        } else {
+                            println!("⚠️ Contexto vacío!");
+                        }
+
+                        match crate::ai_client::create_client(&session_clone.model_config, &api_key)
+                        {
+                            Ok(client) => {
+                                // Enviar con soporte de tools
+                                match client
+                                    .send_message_with_tools(
+                                        &session_clone.messages,
+                                        &context,
+                                        Some(&mcp_registry),
+                                    )
+                                    .await
+                                {
+                                    Ok(ai_response) => {
+                                        // Si hay tool calls, ejecutarlos
+                                        if !ai_response.tool_calls.is_empty() {
+                                            println!(
+                                                "🔧 IA solicitó {} herramientas",
+                                                ai_response.tool_calls.len()
+                                            );
+
+                                            let mut tool_results = Vec::new();
+                                            let mut needs_sidebar_refresh = false;
+
+                                            for tool_call in &ai_response.tool_calls {
+                                                println!("  → Ejecutando: {:?}", tool_call);
+
+                                                // Detectar si la herramienta modifica el sistema de archivos
+                                                let modifies_files = matches!(
+                                                    tool_call,
+                                                    MCPToolCall::CreateNote { .. }
+                                                        | MCPToolCall::DeleteNote { .. }
+                                                        | MCPToolCall::RenameNote { .. }
+                                                        | MCPToolCall::DuplicateNote { .. }
+                                                        | MCPToolCall::MoveNote { .. }
+                                                        | MCPToolCall::CreateFolder { .. }
+                                                        | MCPToolCall::CreateDailyNote { .. }
+                                                );
+
+                                                match mcp_executor
+                                                    .borrow()
+                                                    .execute(tool_call.clone())
+                                                {
+                                                    Ok(result) => {
+                                                        println!("    ✓ Resultado: {:?}", result);
+                                                        if modifies_files && result.success {
+                                                            needs_sidebar_refresh = true;
+                                                        }
+                                                        tool_results.push(result);
+                                                    }
+                                                    Err(e) => {
+                                                        println!("    ✗ Error: {}", e);
+                                                        tool_results.push(MCPToolResult::error(
+                                                            format!(
+                                                                "Error ejecutando herramienta: {}",
+                                                                e
+                                                            ),
+                                                        ));
+                                                    }
+                                                }
+                                            }
+
+                                            // Separar resultados exitosos y fallidos
+                                            let mut successful_results = Vec::new();
+                                            let mut failed_results = Vec::new();
+
+                                            for (idx, r) in tool_results.iter().enumerate() {
+                                                if r.success {
+                                                    // Extraer el campo "message" si existe
+                                                    if let Some(data) = &r.data {
+                                                        let msg = data
+                                                            .as_object()
+                                                            .and_then(|obj| obj.get("message"))
+                                                            .and_then(|v| v.as_str())
+                                                            .map(|s| s.to_string())
+                                                            .unwrap_or_else(|| {
+                                                                serde_json::to_string_pretty(data)
+                                                                    .unwrap_or_default()
+                                                            });
+                                                        successful_results.push(msg);
+                                                    } else {
+                                                        successful_results.push(
+                                                            "✓ Operación exitosa".to_string(),
+                                                        );
+                                                    }
+                                                } else {
+                                                    // Mostrar qué herramienta falló y por qué
+                                                    let tool_name =
+                                                        match &ai_response.tool_calls.get(idx) {
+                                                            Some(tool_call) => {
+                                                                format!("{:?}", tool_call)
+                                                                    .split('{')
+                                                                    .next()
+                                                                    .unwrap_or("Unknown")
+                                                                    .to_string()
+                                                            }
+                                                            None => "Unknown".to_string(),
+                                                        };
+                                                    let error_msg = r
+                                                        .error
+                                                        .as_deref()
+                                                        .unwrap_or("Error desconocido");
+                                                    failed_results.push(format!(
+                                                        "✗ {}: {}",
+                                                        tool_name, error_msg
+                                                    ));
+                                                }
+                                            }
+
+                                            // Construir mensaje final
+                                            let final_response = if !successful_results.is_empty()
+                                                || !failed_results.is_empty()
+                                            {
+                                                let mut parts = Vec::new();
+
+                                                // Agregar resultados exitosos
+                                                if !successful_results.is_empty() {
+                                                    parts.push(successful_results.join("\n"));
+                                                }
+
+                                                // Agregar resultados fallidos
+                                                if !failed_results.is_empty() {
+                                                    parts.push(format!(
+                                                        "\n{}",
+                                                        failed_results.join("\n")
+                                                    ));
+                                                }
+
+                                                let tools_msg = parts.join("\n");
+
+                                                if let Some(content) = ai_response.content {
+                                                    format!("{}\n\n---\n\n{}", tools_msg, content)
+                                                } else {
+                                                    tools_msg
+                                                }
+                                            } else if let Some(content) = ai_response.content {
+                                                content
+                                            } else {
+                                                "⚠️ No se pudo completar la operación".to_string()
+                                            };
+
+                                            sender_clone
+                                                .input(AppMsg::ReceiveChatResponse(final_response));
+
+                                            // Refrescar sidebar si se modificaron archivos
+                                            if needs_sidebar_refresh {
+                                                println!("🔄 Refrescando sidebar...");
+                                                sender_clone.input(AppMsg::RefreshSidebar);
+                                            }
+                                        } else {
+                                            // No hay tool calls, respuesta normal
+                                            sender_clone.input(AppMsg::ReceiveChatResponse(
+                                                ai_response.content.unwrap_or_default(),
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        sender_clone.input(AppMsg::ReceiveChatResponse(format!(
+                                            "❌ Error: {}",
+                                            e
+                                        )));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                sender_clone.input(AppMsg::ReceiveChatResponse(format!(
+                                    "❌ Error creando cliente: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    });
+                }
+            }
+
+            AppMsg::ReceiveChatResponse(response) => {
+                println!("🤖 Respuesta recibida: {} caracteres", response.len());
+
+                // Retirar el indicador inmediatamente para evitar que quede colgado
+                self.remove_chat_typing_indicator();
+
+                // Agregar a la sesión
+                if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                    session.add_message(crate::ai_chat::MessageRole::Assistant, response.clone());
+                }
+
+                // Guardar respuesta en BD si hay sesión activa
+                if let Some(session_id) = *self.chat_session_id.borrow() {
+                    let _ = self
+                        .notes_db
+                        .save_chat_message(session_id, "assistant", &response);
+                }
+
+                // Mostrar en UI
+                self.append_chat_message(crate::ai_chat::MessageRole::Assistant, &response);
+
+                sender.input(AppMsg::UpdateChatTokenCount);
+            }
+
+            AppMsg::ShowAttachNoteDialog => {
+                // Crear diálogo con lista de notas
+                let dialog = gtk::Dialog::builder()
+                    .transient_for(&self.main_window)
+                    .modal(true)
+                    .title("Adjuntar nota al contexto")
+                    .width_request(400)
+                    .height_request(500)
+                    .build();
+
+                dialog.add_button("Cancelar", gtk::ResponseType::Cancel);
+                dialog.add_button("Adjuntar", gtk::ResponseType::Accept);
+
+                // Crear lista scrollable
+                let scrolled = gtk::ScrolledWindow::builder()
+                    .hscrollbar_policy(gtk::PolicyType::Never)
+                    .vscrollbar_policy(gtk::PolicyType::Automatic)
+                    .vexpand(true)
+                    .build();
+
+                let list_box = gtk::ListBox::new();
+                list_box.set_selection_mode(gtk::SelectionMode::Single);
+                list_box.add_css_class("boxed-list");
+
+                // Agregar todas las notas
+                if let Ok(notes) = self.notes_dir.list_notes() {
+                    for note in notes {
+                        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+                        row.set_margin_all(8);
+
+                        let icon = gtk::Label::new(Some("📄"));
+                        row.append(&icon);
+
+                        let label = gtk::Label::new(Some(note.name()));
+                        label.set_xalign(0.0);
+                        label.set_hexpand(true);
+                        row.append(&label);
+
+                        let list_row = gtk::ListBoxRow::new();
+                        list_row.set_child(Some(&row));
+                        list_row.set_property("tooltip-text", Some(note.name()));
+                        list_box.append(&list_row);
+                    }
+                }
+
+                scrolled.set_child(Some(&list_box));
+                dialog.content_area().append(&scrolled);
+
+                let sender_clone = sender.clone();
+                dialog.connect_response(move |dialog, response| {
+                    if response == gtk::ResponseType::Accept {
+                        if let Some(row) = list_box.selected_row() {
+                            if let Some(child) = row.child() {
+                                if let Ok(box_widget) = child.downcast::<gtk::Box>() {
+                                    // Obtener el segundo hijo (el Label con el nombre)
+                                    let mut iter = box_widget.first_child();
+                                    iter = iter.and_then(|w| w.next_sibling()); // Saltar el icono
+
+                                    if let Some(label_widget) = iter {
+                                        if let Ok(label) = label_widget.downcast::<gtk::Label>() {
+                                            if let Some(note_name) =
+                                                label.text().as_str().to_string().into()
+                                            {
+                                                sender_clone
+                                                    .input(AppMsg::AttachNoteToContext(note_name));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    dialog.close();
+                });
+
+                dialog.present();
+            }
+
+            AppMsg::AttachNoteToContext(note_name) => {
+                if let Ok(Some(note)) = self.notes_dir.find_note(&note_name) {
+                    {
+                        if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                            session.attach_note(note);
+                            println!("📎 Nota '{}' adjuntada al contexto", note_name);
+                        }
+                    } // ← Libera borrow_mut aquí
+                    self.refresh_context_list();
+                    sender.input(AppMsg::UpdateChatTokenCount);
+                }
+            }
+
+            AppMsg::DetachNoteFromContext(note_name) => {
+                {
+                    if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                        session.detach_note(&note_name);
+                        println!("📎 Nota '{}' removida del contexto", note_name);
+                    }
+                } // ← Libera borrow_mut aquí
+                self.refresh_context_list();
+                sender.input(AppMsg::UpdateChatTokenCount);
+            }
+
+            AppMsg::ClearChatContext => {
+                {
+                    if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                        session.clear_context();
+                        println!("🧹 Contexto limpiado");
+                    }
+                } // ← Libera borrow_mut aquí
+                self.refresh_context_list();
+                sender.input(AppMsg::UpdateChatTokenCount);
+            }
+
+            AppMsg::ClearChatHistory => {
+                // Mostrar diálogo de confirmación
+                let dialog = gtk::MessageDialog::builder()
+                    .transient_for(&self.main_window)
+                    .modal(true)
+                    .message_type(gtk::MessageType::Warning)
+                    .buttons(gtk::ButtonsType::YesNo)
+                    .text("¿Borrar todo el historial de chat?")
+                    .secondary_text("Esta acción eliminará permanentemente todo el historial de conversaciones guardado. No se puede deshacer.")
+                    .build();
+
+                let sender_clone = sender.clone();
+                dialog.connect_response(move |dialog, response| {
+                    dialog.close();
+
+                    if response == gtk::ResponseType::Yes {
+                        sender_clone.input(AppMsg::ConfirmClearChatHistory);
+                    }
+                });
+
+                dialog.present();
+            }
+
+            AppMsg::ConfirmClearChatHistory => {
+                // Borrar de la base de datos
+                if let Err(e) = self.notes_db.clear_all_chat_history() {
+                    eprintln!("Error borrando historial: {}", e);
+                } else {
+                    println!("🗑️ Historial borrado completamente de la base de datos");
+                }
+
+                // Limpiar sesión actual
+                *self.chat_session_id.borrow_mut() = None;
+                *self.chat_session.borrow_mut() = None;
+
+                // Limpiar UI
+                while let Some(child) = self.chat_history_list.first_child() {
+                    self.chat_history_list.remove(&child);
+                }
+
+                self.refresh_context_list();
+                sender.input(AppMsg::UpdateChatTokenCount);
+
+                // Mostrar confirmación
+                let info_dialog = gtk::MessageDialog::builder()
+                    .transient_for(&self.main_window)
+                    .modal(true)
+                    .message_type(gtk::MessageType::Info)
+                    .buttons(gtk::ButtonsType::Ok)
+                    .text("Historial borrado")
+                    .secondary_text("El historial de chat ha sido eliminado completamente.")
+                    .build();
+
+                info_dialog.present();
+            }
+
+            AppMsg::UpdateChatTokenCount => {
+                if let Some(session) = self.chat_session.borrow().as_ref() {
+                    let current = session.total_context_tokens();
+                    let max = session.model_config.max_tokens;
+                    let percentage = (current as f64 / max as f64).min(1.0);
+
+                    self.chat_tokens_progress.set_fraction(percentage);
+                    self.chat_tokens_progress
+                        .set_text(Some(&format!("Tokens: {} / {}", current, max)));
+
+                    // Cambiar color según uso
+                    if percentage > 0.9 {
+                        self.chat_tokens_progress.add_css_class("chat-token-danger");
+                        self.chat_tokens_progress
+                            .remove_css_class("chat-token-warning");
+                    } else if percentage > 0.7 {
+                        self.chat_tokens_progress
+                            .add_css_class("chat-token-warning");
+                        self.chat_tokens_progress
+                            .remove_css_class("chat-token-danger");
+                    } else {
+                        self.chat_tokens_progress
+                            .remove_css_class("chat-token-danger");
+                        self.chat_tokens_progress
+                            .remove_css_class("chat-token-warning");
+                    }
+                }
+            }
         }
     }
 }
 
 impl MainApp {
+    /// Obtiene el ID de la nota actual en la base de datos
+    fn get_current_note_id(&self) -> Option<i64> {
+        if let Some(note) = &self.current_note {
+            if let Ok(Some(metadata)) = self.notes_db.get_note(note.name()) {
+                return Some(metadata.id);
+            }
+        }
+        None
+    }
     fn setup_theme_watcher(sender: ComponentSender<Self>) {
         use notify::{Event, RecursiveMode, Watcher};
         use std::sync::mpsc::channel;
@@ -3671,24 +4708,58 @@ impl MainApp {
         }
 
         // Cargar el CSS de la aplicación
-        // Prioridad: 1) Sistema instalado, 2) Desarrollo local
-        let app_css = std::fs::read_to_string("/usr/share/notnative/assets/style.css")
+        // Prioridad: 1) Desarrollo local, 2) Sistema instalado
+        println!("🔍 DEBUG: Intentando cargar CSS...");
+        let app_css = std::fs::read_to_string("assets/style.css")
+            .inspect(|_| println!("✅ CSS cargado desde: assets/style.css"))
             .ok()
+            .or_else(|| {
+                std::fs::read_to_string("/usr/share/notnative-app/assets/style.css")
+                    .inspect(|_| {
+                        println!("✅ CSS cargado desde: /usr/share/notnative-app/assets/style.css")
+                    })
+                    .ok()
+            })
+            .or_else(|| {
+                std::fs::read_to_string("/usr/share/notnative/assets/style.css")
+                    .inspect(|_| {
+                        println!(
+                            "✅ CSS cargado desde: /usr/share/notnative/assets/style.css (fallback)"
+                        )
+                    })
+                    .ok()
+            })
             .or_else(|| {
                 // Rutas de desarrollo
                 if let Ok(exe_path) = std::env::current_exe() {
-                    exe_path
+                    let css_path = exe_path
                         .parent()
                         .and_then(|p| p.parent())
                         .and_then(|p| p.parent())
-                        .map(|p| p.join("assets/style.css"))
-                        .and_then(|path| std::fs::read_to_string(&path).ok())
-                } else {
-                    None
+                        .map(|p| p.join("assets/style.css"));
+
+                    if let Some(ref path) = css_path {
+                        println!("🔍 DEBUG: Intentando ruta exe: {:?}", path);
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            println!("✅ CSS cargado desde ruta exe: {:?}", path);
+                            return Some(content);
+                        }
+                    }
                 }
+                None
             })
-            .or_else(|| std::fs::read_to_string("assets/style.css").ok())
-            .or_else(|| std::fs::read_to_string("./notnative-app/assets/style.css").ok());
+            .or_else(|| {
+                println!("🔍 DEBUG: Intentando assets/style.css");
+                std::fs::read_to_string("assets/style.css")
+                    .inspect(|_| println!("✅ CSS cargado desde: assets/style.css"))
+                    .ok()
+            })
+            .or_else(|| {
+                println!("🔍 DEBUG: Intentando ./notnative-app/assets/style.css");
+                std::fs::read_to_string("./notnative-app/assets/style.css")
+                    .inspect(|_| println!("✅ CSS cargado desde: ./notnative-app/assets/style.css"))
+                    .ok()
+            });
 
         // Combinamos los CSS: primero las variables de Omarchy, luego el CSS de la app
         let mut combined_css = String::new();
@@ -3715,8 +4786,13 @@ impl MainApp {
 
         match action {
             EditorAction::ChangeMode(new_mode) => {
-                *self.mode.borrow_mut() = new_mode;
-                println!("Cambiado a modo: {:?}", new_mode);
+                // Si cambiamos a ChatAI, usar el mensaje apropiado
+                if new_mode == EditorMode::ChatAI {
+                    sender.input(AppMsg::EnterChatMode);
+                } else {
+                    *self.mode.borrow_mut() = new_mode;
+                    println!("Cambiado a modo: {:?}", new_mode);
+                }
             }
             EditorAction::InsertChar(ch) => {
                 // Si hay selección, primero borrarla
@@ -4390,39 +5466,56 @@ impl MainApp {
     fn map_buffer_pos_to_display(&self, original_text: &str, buffer_pos: usize) -> usize {
         let mut display_pos = 0;
         let mut original_pos = 0;
+        let mut byte_pos = 0; // Rastrear posición en bytes para slicing
+        let mut at_line_start = true;
         let mut chars = original_text.chars().peekable();
 
         while original_pos < buffer_pos && chars.peek().is_some() {
             let ch = chars.next().unwrap();
+            let char_len = ch.len_utf8();
             original_pos += 1;
 
             match ch {
                 // Encabezados: saltar #
-                '#' if display_pos == 0 || original_text[..original_pos - 1].ends_with('\n') => {
+                '#' if at_line_start => {
+                    byte_pos += char_len;
                     // Contar cuántos # hay
                     while chars.peek() == Some(&'#') && original_pos < buffer_pos {
-                        chars.next();
+                        let next_ch = chars.next().unwrap();
+                        byte_pos += next_ch.len_utf8();
                         original_pos += 1;
                     }
                     // Saltar espacio después de #
                     if chars.peek() == Some(&' ') && original_pos < buffer_pos {
-                        chars.next();
+                        let next_ch = chars.next().unwrap();
+                        byte_pos += next_ch.len_utf8();
                         original_pos += 1;
                     }
+                    at_line_start = false;
                 }
                 // Negrita: saltar **
                 '*' if chars.peek() == Some(&'*') => {
+                    byte_pos += char_len;
                     if original_pos < buffer_pos {
-                        chars.next();
+                        let next_ch = chars.next().unwrap();
+                        byte_pos += next_ch.len_utf8();
                         original_pos += 1;
                     }
                 }
                 // Cursiva o código: saltar * o `
                 '*' | '`' => {
+                    byte_pos += char_len;
                     // No incrementar display_pos
+                }
+                '\n' => {
+                    byte_pos += char_len;
+                    at_line_start = true;
+                    display_pos += 1;
                 }
                 // Todo lo demás: mantener
                 _ => {
+                    byte_pos += char_len;
+                    at_line_start = false;
                     display_pos += 1;
                 }
             }
@@ -5430,6 +6523,7 @@ impl MainApp {
             EditorMode::Insert => "<b>INSERT</b>",
             EditorMode::Command => "<b>COMMAND</b>",
             EditorMode::Visual => "<b>VISUAL</b>",
+            EditorMode::ChatAI => "<b>CHAT AI</b>",
         };
         self.mode_label.set_markup(mode_text);
 
@@ -7830,9 +8924,14 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .title(&i18n.t("preferences"))
-            .default_width(500)
-            .default_height(450)
+            .default_width(600)
+            .default_height(700)
             .build();
+
+        // ScrolledWindow para que el contenido sea scrollable
+        let scrolled = gtk::ScrolledWindow::new();
+        scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scrolled.set_vexpand(true);
 
         let content_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -8146,6 +9245,608 @@ impl MainApp {
 
         content_box.append(&audio_box);
 
+        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // Sección de AI Assistant
+        let ai_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+
+        let ai_label = gtk::Label::builder()
+            .label("AI Assistant")
+            .halign(gtk::Align::Start)
+            .build();
+        ai_label.add_css_class("heading");
+        ai_box.append(&ai_label);
+
+        let ai_description = gtk::Label::builder()
+            .label("Configura la API key y modelo para el asistente de IA")
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .build();
+        ai_description.add_css_class("dim-label");
+        ai_box.append(&ai_description);
+
+        // API Key
+        let api_key_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let api_key_label = gtk::Label::builder()
+            .label("API Key:")
+            .halign(gtk::Align::Start)
+            .width_chars(12)
+            .build();
+
+        let api_key_entry = gtk::Entry::builder()
+            .hexpand(true)
+            .placeholder_text("sk-...")
+            .visibility(false)
+            .build();
+
+        // Cargar API key actual
+        if let Some(key) = &self.notes_config.get_ai_config().api_key {
+            api_key_entry.set_text(key);
+        }
+
+        let sender_clone = sender.clone();
+        api_key_entry.connect_changed(move |entry| {
+            let api_key = entry.text().to_string();
+            if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                config.set_ai_api_key(if api_key.is_empty() {
+                    None
+                } else {
+                    Some(api_key)
+                });
+                let _ = config.save(NotesConfig::default_path());
+                sender_clone.input(AppMsg::ReloadConfig);
+            }
+        });
+
+        api_key_box.append(&api_key_label);
+        api_key_box.append(&api_key_entry);
+        ai_box.append(&api_key_box);
+
+        // Provider dropdown
+        let provider_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let provider_label = gtk::Label::builder()
+            .label("Proveedor:")
+            .halign(gtk::Align::Start)
+            .width_chars(12)
+            .build();
+
+        let provider_dropdown =
+            gtk::DropDown::from_strings(&["OpenRouter", "OpenAI", "Anthropic", "Ollama"]);
+        let current_provider = &self.notes_config.get_ai_config().provider;
+        provider_dropdown.set_selected(match current_provider.as_str() {
+            "openai" => 1,
+            "anthropic" => 2,
+            "ollama" => 3,
+            _ => 0, // openrouter por defecto
+        });
+
+        let sender_clone = sender.clone();
+        provider_dropdown.connect_selected_notify(move |dropdown| {
+            let provider = match dropdown.selected() {
+                1 => "openai",
+                2 => "anthropic",
+                3 => "ollama",
+                _ => "openrouter",
+            };
+            if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                config.set_ai_provider(provider.to_string());
+                let _ = config.save(NotesConfig::default_path());
+                sender_clone.input(AppMsg::ReloadConfig);
+            }
+        });
+
+        provider_box.append(&provider_label);
+        provider_box.append(&provider_dropdown);
+        ai_box.append(&provider_box);
+
+        // Model dropdown (cargando dinámicamente)
+        let model_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+
+        let model_header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let model_label = gtk::Label::builder()
+            .label("Modelo:")
+            .halign(gtk::Align::Start)
+            .width_chars(12)
+            .build();
+
+        let refresh_models_btn = gtk::Button::builder()
+            .label("🔄")
+            .tooltip_text("Actualizar lista de modelos desde OpenRouter")
+            .build();
+        refresh_models_btn.add_css_class("flat");
+        refresh_models_btn.add_css_class("circular");
+
+        model_header_box.append(&model_label);
+        model_header_box.append(&refresh_models_btn);
+        model_box.append(&model_header_box);
+
+        // Buscador de modelos
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Buscar modelo...")
+            .build();
+        model_box.append(&search_entry);
+
+        // Lista de modelos (usamos ListBox con scroll para mejor control)
+        let models_scroll = gtk::ScrolledWindow::builder()
+            .height_request(300)
+            .vexpand(false)
+            .hexpand(true)
+            .build();
+        models_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+
+        let models_listbox = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .build();
+        models_listbox.add_css_class("boxed-list");
+
+        models_scroll.set_child(Some(&models_listbox));
+
+        // Modelos iniciales básicos
+        let initial_models = vec![
+            ("google/gemini-flash-1.5", "Gratis • 1M ctx 🖼️"),
+            ("google/gemini-pro-1.5", "$1.25/1M • 2M ctx 🖼️"),
+            ("anthropic/claude-3.5-sonnet", "$3.00/1M • 200K ctx 🖼️"),
+            ("openai/gpt-4o", "$2.50/1M • 128K ctx 🖼️"),
+            ("openai/gpt-4o-mini", "$0.15/1M • 128K ctx"),
+            ("meta-llama/llama-3.1-70b-instruct", "$0.59/1M • 131K ctx"),
+            ("qwen/qwen-2.5-72b-instruct", "Gratis • 32K ctx"),
+            ("mistralai/mistral-small", "$0.20/1M • 32K ctx"),
+            ("google/gemma-2-9b-it", "Gratis • 8K ctx"),
+            ("meta-llama/llama-3.2-3b-instruct", "Gratis • 128K ctx"),
+        ];
+
+        let current_model = self.notes_config.get_ai_config().model.clone();
+        let mut selected_row_index = 0;
+
+        // Almacenar referencias a modelos
+        let all_models = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        // Poblar lista inicial
+        for (i, (model_id, info)) in initial_models.iter().enumerate() {
+            let row = gtk::ListBoxRow::new();
+            let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            box_row.set_margin_all(8);
+
+            let id_label = gtk::Label::new(Some(model_id));
+            id_label.set_xalign(0.0);
+            id_label.add_css_class("heading");
+
+            let info_label = gtk::Label::new(Some(info));
+            info_label.set_xalign(0.0);
+            info_label.add_css_class("caption");
+            info_label.add_css_class("dim-label");
+
+            box_row.append(&id_label);
+            box_row.append(&info_label);
+            row.set_child(Some(&box_row));
+
+            models_listbox.append(&row);
+
+            if *model_id == current_model {
+                selected_row_index = i;
+            }
+
+            all_models.borrow_mut().push(model_id.to_string());
+        }
+
+        // Seleccionar modelo actual
+        if let Some(row) = models_listbox.row_at_index(selected_row_index as i32) {
+            models_listbox.select_row(Some(&row));
+        }
+
+        // Conectar selección de modelo
+        let sender_clone = sender.clone();
+        let all_models_clone = all_models.clone();
+        models_listbox.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                let index = row.index() as usize;
+                let models = all_models_clone.borrow();
+                if let Some(model_id) = models.get(index) {
+                    if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                        config.set_ai_model(model_id.clone());
+                        let _ = config.save(NotesConfig::default_path());
+                        sender_clone.input(AppMsg::ReloadConfig);
+                    }
+                }
+            }
+        });
+
+        // Implementar búsqueda
+        let listbox_clone = models_listbox.clone();
+        let all_models_search = all_models.clone();
+        let full_models = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let full_models_clone = full_models.clone();
+
+        search_entry.connect_search_changed(move |entry| {
+            let query = entry.text().to_string();
+            let full = full_models_clone.borrow();
+
+            // Si no hay modelos completos cargados, buscar en los iniciales
+            if full.is_empty() {
+                // Filtrar filas existentes
+                let mut index = 0;
+                while let Some(row) = listbox_clone.row_at_index(index) {
+                    if let Some(child) = row.child() {
+                        if let Ok(box_row) = child.downcast::<gtk::Box>() {
+                            if let Some(label) = box_row.first_child() {
+                                if let Ok(id_label) = label.downcast::<gtk::Label>() {
+                                    let model_id = id_label.text().to_string();
+                                    let visible = query.is_empty()
+                                        || model_id.to_lowercase().contains(&query.to_lowercase());
+                                    row.set_visible(visible);
+                                }
+                            }
+                        }
+                    }
+                    index += 1;
+                }
+            } else {
+                // Buscar en modelos completos
+                let filtered = crate::ai_chat::search_models(&full, &query);
+
+                // Limpiar lista
+                while let Some(row) = listbox_clone.row_at_index(0) {
+                    listbox_clone.remove(&row);
+                }
+
+                // Separar en gratuitos y de pago
+                let free_filtered: Vec<_> = filtered
+                    .iter()
+                    .filter(|m| m.pricing.prompt == "0" || m.pricing.prompt.starts_with("0.00"))
+                    .collect();
+                let paid_filtered: Vec<_> = filtered
+                    .iter()
+                    .filter(|m| m.pricing.prompt != "0" && !m.pricing.prompt.starts_with("0.00"))
+                    .collect();
+
+                // Mostrar gratuitos primero
+                if !free_filtered.is_empty() {
+                    let separator = gtk::ListBoxRow::new();
+                    separator.set_selectable(false);
+                    separator.set_activatable(false);
+                    let sep_label = gtk::Label::new(Some("═══ GRATUITOS ═══"));
+                    sep_label.add_css_class("heading");
+                    sep_label.set_margin_all(8);
+                    separator.set_child(Some(&sep_label));
+                    listbox_clone.append(&separator);
+
+                    for model in free_filtered.iter().take(50) {
+                        let row = gtk::ListBoxRow::new();
+                        let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                        box_row.set_margin_all(8);
+
+                        let id_label = gtk::Label::new(Some(&model.id));
+                        id_label.set_xalign(0.0);
+                        id_label.add_css_class("heading");
+
+                        let info = crate::ai_chat::format_model_display(model);
+                        let info_label = gtk::Label::new(Some(&info));
+                        info_label.set_xalign(0.0);
+                        info_label.add_css_class("caption");
+                        info_label.add_css_class("dim-label");
+
+                        box_row.append(&id_label);
+                        box_row.append(&info_label);
+
+                        let tooltip = crate::ai_chat::format_model_tooltip(model);
+                        row.set_tooltip_text(Some(&tooltip));
+
+                        row.set_child(Some(&box_row));
+                        listbox_clone.append(&row);
+                    }
+                }
+
+                // Mostrar de pago después
+                if !paid_filtered.is_empty() {
+                    let separator = gtk::ListBoxRow::new();
+                    separator.set_selectable(false);
+                    separator.set_activatable(false);
+                    let sep_label = gtk::Label::new(Some("═══ DE PAGO ═══"));
+                    sep_label.add_css_class("heading");
+                    sep_label.set_margin_all(8);
+                    separator.set_child(Some(&sep_label));
+                    listbox_clone.append(&separator);
+
+                    for model in paid_filtered.iter().take(100) {
+                        let row = gtk::ListBoxRow::new();
+                        let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                        box_row.set_margin_all(8);
+
+                        let id_label = gtk::Label::new(Some(&model.id));
+                        id_label.set_xalign(0.0);
+                        id_label.add_css_class("heading");
+
+                        let info = crate::ai_chat::format_model_display(model);
+                        let info_label = gtk::Label::new(Some(&info));
+                        info_label.set_xalign(0.0);
+                        info_label.add_css_class("caption");
+                        info_label.add_css_class("dim-label");
+
+                        box_row.append(&id_label);
+                        box_row.append(&info_label);
+
+                        let tooltip = crate::ai_chat::format_model_tooltip(model);
+                        row.set_tooltip_text(Some(&tooltip));
+
+                        row.set_child(Some(&box_row));
+                        listbox_clone.append(&row);
+                    }
+                }
+
+                // Mensaje si no hay resultados
+                if free_filtered.is_empty() && paid_filtered.is_empty() {
+                    let row = gtk::ListBoxRow::new();
+                    row.set_selectable(false);
+                    row.set_activatable(false);
+                    let label = gtk::Label::new(Some("No se encontraron modelos"));
+                    label.add_css_class("dim-label");
+                    label.set_margin_all(16);
+                    row.set_child(Some(&label));
+                    listbox_clone.append(&row);
+                }
+            }
+        });
+
+        // Botón para cargar modelos desde OpenRouter
+        let listbox_refresh = models_listbox.clone();
+        let sender_clone2 = sender.clone();
+        let all_models_refresh = all_models.clone();
+        let full_models_refresh = full_models.clone();
+        let search_clone = search_entry.clone();
+
+        refresh_models_btn.connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            btn.set_label("⏳");
+
+            let listbox = listbox_refresh.clone();
+            let btn_clone = btn.clone();
+            let sender = sender_clone2.clone();
+            let all_models_ref = all_models_refresh.clone();
+            let full_models_ref = full_models_refresh.clone();
+            let search_ref = search_clone.clone();
+
+            gtk::glib::spawn_future_local(async move {
+                match crate::ai_chat::fetch_openrouter_models().await {
+                    Ok(mut models) => {
+                        // Ordenar por ID
+                        models.sort_by(|a, b| a.id.cmp(&b.id));
+
+                        // Guardar modelos completos
+                        *full_models_ref.borrow_mut() = models.clone();
+
+                        // Limpiar lista actual
+                        while let Some(row) = listbox.row_at_index(0) {
+                            listbox.remove(&row);
+                        }
+
+                        // Separar modelos gratuitos y de pago
+                        let free_models: Vec<_> = models
+                            .iter()
+                            .filter(|m| {
+                                m.pricing.prompt == "0" || m.pricing.prompt.starts_with("0.00")
+                            })
+                            .collect();
+                        let paid_models: Vec<_> = models
+                            .iter()
+                            .filter(|m| {
+                                m.pricing.prompt != "0" && !m.pricing.prompt.starts_with("0.00")
+                            })
+                            .collect();
+
+                        let mut model_ids = Vec::new();
+
+                        // Agregar sección de modelos gratuitos
+                        if !free_models.is_empty() {
+                            let separator = gtk::ListBoxRow::new();
+                            separator.set_selectable(false);
+                            separator.set_activatable(false);
+                            let sep_label = gtk::Label::new(Some("═══ MODELOS GRATUITOS ═══"));
+                            sep_label.add_css_class("heading");
+                            sep_label.set_margin_all(8);
+                            separator.set_child(Some(&sep_label));
+                            listbox.append(&separator);
+
+                            for model in free_models.iter().take(50) {
+                                let row = gtk::ListBoxRow::new();
+                                let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                                box_row.set_margin_all(8);
+
+                                let id_label = gtk::Label::new(Some(&model.id));
+                                id_label.set_xalign(0.0);
+                                id_label.add_css_class("heading");
+
+                                let info = crate::ai_chat::format_model_display(model);
+                                let info_label = gtk::Label::new(Some(&info));
+                                info_label.set_xalign(0.0);
+                                info_label.add_css_class("caption");
+                                info_label.add_css_class("dim-label");
+
+                                box_row.append(&id_label);
+                                box_row.append(&info_label);
+
+                                // Tooltip con info completa
+                                let tooltip = crate::ai_chat::format_model_tooltip(model);
+                                row.set_tooltip_text(Some(&tooltip));
+
+                                row.set_child(Some(&box_row));
+                                listbox.append(&row);
+                                model_ids.push(model.id.clone());
+                            }
+                        }
+
+                        // Agregar sección de modelos de pago
+                        if !paid_models.is_empty() {
+                            let separator = gtk::ListBoxRow::new();
+                            separator.set_selectable(false);
+                            separator.set_activatable(false);
+                            let sep_label = gtk::Label::new(Some("═══ MODELOS DE PAGO ═══"));
+                            sep_label.add_css_class("heading");
+                            sep_label.set_margin_all(8);
+                            separator.set_child(Some(&sep_label));
+                            listbox.append(&separator);
+
+                            for model in paid_models.iter().take(100) {
+                                let row = gtk::ListBoxRow::new();
+                                let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                                box_row.set_margin_all(8);
+
+                                let id_label = gtk::Label::new(Some(&model.id));
+                                id_label.set_xalign(0.0);
+                                id_label.add_css_class("heading");
+
+                                let info = crate::ai_chat::format_model_display(model);
+                                let info_label = gtk::Label::new(Some(&info));
+                                info_label.set_xalign(0.0);
+                                info_label.add_css_class("caption");
+                                info_label.add_css_class("dim-label");
+
+                                box_row.append(&id_label);
+                                box_row.append(&info_label);
+
+                                // Tooltip con info completa
+                                let tooltip = crate::ai_chat::format_model_tooltip(model);
+                                row.set_tooltip_text(Some(&tooltip));
+
+                                row.set_child(Some(&box_row));
+                                listbox.append(&row);
+                                model_ids.push(model.id.clone());
+                            }
+                        }
+
+                        *all_models_ref.borrow_mut() = model_ids;
+
+                        // Limpiar búsqueda
+                        search_ref.set_text("");
+
+                        println!("✅ Cargados {} modelos desde OpenRouter", models.len());
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Error cargando modelos: {}", e);
+                    }
+                }
+
+                btn_clone.set_sensitive(true);
+                btn_clone.set_label("🔄");
+            });
+        });
+
+        model_box.append(&models_scroll);
+        ai_box.append(&model_box);
+
+        // Temperature slider
+        let temp_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let temp_label = gtk::Label::builder()
+            .label("Temperatura:")
+            .halign(gtk::Align::Start)
+            .width_chars(12)
+            .build();
+
+        let temp_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 2.0, 0.1);
+        temp_scale.set_hexpand(true);
+        temp_scale.set_value(self.notes_config.get_ai_config().temperature as f64);
+        temp_scale.set_draw_value(true);
+        temp_scale.set_value_pos(gtk::PositionType::Right);
+
+        let sender_clone = sender.clone();
+        temp_scale.connect_value_changed(move |scale| {
+            let temp = scale.value() as f32;
+            if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                config.set_ai_temperature(temp);
+                let _ = config.save(NotesConfig::default_path());
+                sender_clone.input(AppMsg::ReloadConfig);
+            }
+        });
+
+        temp_box.append(&temp_label);
+        temp_box.append(&temp_scale);
+        ai_box.append(&temp_box);
+
+        // Max tokens slider
+        let tokens_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let tokens_label = gtk::Label::builder()
+            .label("Max Tokens:")
+            .halign(gtk::Align::Start)
+            .width_chars(12)
+            .build();
+
+        let tokens_scale =
+            gtk::Scale::with_range(gtk::Orientation::Horizontal, 100.0, 4000.0, 100.0);
+        tokens_scale.set_hexpand(true);
+        tokens_scale.set_value(self.notes_config.get_ai_config().max_tokens as f64);
+        tokens_scale.set_draw_value(true);
+        tokens_scale.set_value_pos(gtk::PositionType::Right);
+
+        let sender_clone = sender.clone();
+        tokens_scale.connect_value_changed(move |scale| {
+            let tokens = scale.value() as u32;
+            if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                config.set_ai_max_tokens(tokens);
+                let _ = config.save(NotesConfig::default_path());
+                sender_clone.input(AppMsg::ReloadConfig);
+            }
+        });
+
+        tokens_box.append(&tokens_label);
+        tokens_box.append(&tokens_scale);
+        ai_box.append(&tokens_box);
+
+        // Save history toggle
+        let history_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+
+        let history_label = gtk::Label::builder()
+            .label("Guardar historial:")
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+
+        let history_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+        history_switch.set_active(self.notes_config.get_ai_config().save_history);
+
+        let sender_clone = sender.clone();
+        history_switch.connect_state_set(move |_, state| {
+            if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                config.set_ai_save_history(state);
+                let _ = config.save(NotesConfig::default_path());
+                sender_clone.input(AppMsg::ReloadConfig);
+            }
+            gtk::glib::Propagation::Proceed
+        });
+
+        history_box.append(&history_label);
+        history_box.append(&history_switch);
+        ai_box.append(&history_box);
+
+        content_box.append(&ai_box);
+
         // Botón cerrar
         let button_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -8165,7 +9866,8 @@ impl MainApp {
         button_box.append(&close_button);
         content_box.append(&button_box);
 
-        dialog.set_child(Some(&content_box));
+        scrolled.set_child(Some(&content_box));
+        dialog.set_child(Some(&scrolled));
 
         // Permitir cerrar con Escape
         let esc_controller = gtk::EventControllerKey::new();
@@ -9119,6 +10821,234 @@ impl MainApp {
         match output {
             Ok(output) => output.status.success(),
             Err(_) => false,
+        }
+    }
+
+    // ==================== CHAT AI HELPERS ====================
+
+    /// Agrega un mensaje al historial de chat en la UI
+    fn append_chat_message(&self, role: crate::ai_chat::MessageRole, content: &str) {
+        let timestamp = Local::now().format("%H:%M").to_string();
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.set_margin_top(6);
+        row.set_margin_bottom(6);
+        row.set_hexpand(true);
+        row.add_css_class("chat-row");
+
+        let avatar = gtk::Label::new(None);
+        avatar.add_css_class("chat-avatar");
+        avatar.set_valign(gtk::Align::Start); // Alinear arriba
+
+        let bubble = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        bubble.add_css_class("chat-bubble");
+        bubble.set_spacing(6);
+
+        let meta_label = gtk::Label::new(None);
+        meta_label.add_css_class("chat-meta");
+        meta_label.set_wrap(false);
+
+        let message_label = gtk::Label::new(Some(content));
+        message_label.set_wrap(true);
+        message_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        message_label.set_selectable(true);
+        message_label.set_use_markup(false);
+        message_label.set_xalign(0.0);
+        message_label.add_css_class("chat-message");
+
+        bubble.append(&meta_label);
+        bubble.append(&message_label);
+
+        match role {
+            crate::ai_chat::MessageRole::User => {
+                row.add_css_class("chat-row-user");
+                row.set_halign(gtk::Align::End);
+
+                avatar.set_text("🙂");
+                avatar.add_css_class("chat-avatar-user");
+
+                bubble.add_css_class("chat-bubble-user");
+                meta_label.set_text(&format!("Tú · {}", timestamp));
+                meta_label.add_css_class("chat-meta-user");
+                meta_label.set_xalign(1.0);
+
+                message_label.add_css_class("chat-message-user");
+                message_label.set_xalign(1.0);
+
+                row.append(&bubble);
+                row.append(&avatar);
+            }
+            crate::ai_chat::MessageRole::Assistant => {
+                row.add_css_class("chat-row-assistant");
+                row.set_halign(gtk::Align::Start);
+
+                avatar.set_text("🤖");
+                avatar.add_css_class("chat-avatar-assistant");
+
+                bubble.add_css_class("chat-bubble-assistant");
+                meta_label.set_text(&format!("NotNative AI · {}", timestamp));
+                meta_label.add_css_class("chat-meta-assistant");
+                meta_label.set_xalign(0.0);
+
+                message_label.add_css_class("chat-message-assistant");
+                message_label.set_xalign(0.0);
+
+                row.append(&avatar);
+                row.append(&bubble);
+            }
+            crate::ai_chat::MessageRole::System => {
+                row.add_css_class("chat-row-system");
+                row.set_halign(gtk::Align::Center);
+
+                bubble.add_css_class("chat-bubble-system");
+                meta_label.set_text(&format!("Sistema · {}", timestamp));
+                meta_label.add_css_class("chat-meta-system");
+                meta_label.set_xalign(0.5);
+
+                message_label.add_css_class("chat-message-system");
+                message_label.set_xalign(0.5);
+
+                row.append(&bubble);
+            }
+        }
+
+        self.chat_history_list.append(&row);
+        self.schedule_chat_scroll();
+    }
+
+    fn schedule_chat_scroll(&self) {
+        let adjustment_immediate = self.chat_history_scroll.vadjustment();
+        gtk::glib::idle_add_local_once(move || {
+            Self::scroll_adjustment_to_bottom(&adjustment_immediate);
+        });
+
+        let adjustment_delayed = self.chat_history_scroll.vadjustment();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(240), move || {
+            Self::scroll_adjustment_to_bottom(&adjustment_delayed);
+        });
+    }
+
+    fn scroll_adjustment_to_bottom(adjustment: &gtk::Adjustment) {
+        let lower = adjustment.lower();
+        let upper = adjustment.upper();
+        let page = adjustment.page_size();
+        let target = if page > 0.0 && upper > page {
+            upper - page
+        } else {
+            upper
+        };
+        adjustment.set_value(target.max(lower));
+    }
+
+    /// Muestra un indicador de que la IA está "escribiendo"
+    fn append_chat_typing_indicator(&self) {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.set_margin_top(6);
+        row.set_margin_bottom(6);
+        row.set_hexpand(true);
+        row.set_halign(gtk::Align::Start);
+        row.add_css_class("chat-row");
+        row.add_css_class("chat-row-assistant");
+        row.add_css_class("typing-indicator");
+
+        let avatar = gtk::Label::new(Some("🤖"));
+        avatar.add_css_class("chat-avatar");
+        avatar.add_css_class("chat-avatar-assistant");
+        avatar.set_valign(gtk::Align::Start); // Alinear arriba
+        row.append(&avatar);
+
+        let bubble = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        bubble.add_css_class("chat-bubble");
+        bubble.add_css_class("chat-bubble-assistant");
+        bubble.add_css_class("chat-bubble-typing");
+
+        let label = gtk::Label::new(Some("Escribiendo..."));
+        label.add_css_class("chat-typing-indicator");
+        label.set_xalign(0.0);
+        bubble.append(&label);
+
+        row.append(&bubble);
+        self.chat_history_list.append(&row);
+        self.schedule_chat_scroll();
+    }
+
+    /// Elimina el indicador de "escribiendo"
+    fn remove_chat_typing_indicator(&self) {
+        let mut child = self.chat_history_list.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            let mut is_indicator = widget.has_css_class("typing-indicator");
+
+            if !is_indicator {
+                if let Some(inner) = widget.first_child() {
+                    if inner.has_css_class("typing-indicator") {
+                        is_indicator = true;
+                    }
+                }
+            }
+
+            if is_indicator {
+                self.chat_history_list.remove(&widget);
+                println!("🗑️ Eliminado indicador de escribiendo");
+                break;
+            }
+            child = next;
+        }
+    }
+
+    /// Actualiza la lista de notas en el contexto del chat
+    fn refresh_context_list(&self) {
+        // Limpiar lista actual
+        while let Some(child) = self.chat_context_list.first_child() {
+            self.chat_context_list.remove(&child);
+        }
+
+        // Agregar notas del contexto
+        if let Some(session) = self.chat_session.borrow().as_ref() {
+            if session.attached_notes.is_empty() {
+                let empty_label = gtk::Label::new(Some("Sin notas en contexto"));
+                empty_label.add_css_class("dim-label");
+                empty_label.add_css_class("chat-context-empty");
+                empty_label.set_margin_all(12);
+                self.chat_context_list.append(&empty_label);
+            } else {
+                for note in &session.attached_notes {
+                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+                    row.set_margin_all(0);
+                    row.set_hexpand(true);
+                    row.set_halign(gtk::Align::Fill);
+                    row.add_css_class("chat-context-entry");
+
+                    let icon = gtk::Label::new(Some("📄"));
+                    icon.add_css_class("chat-context-icon");
+                    row.append(&icon);
+
+                    let label = gtk::Label::new(Some(note.name()));
+                    label.set_xalign(0.0);
+                    label.set_hexpand(true);
+                    label.add_css_class("chat-context-label");
+                    row.append(&label);
+
+                    // Botón para remover
+                    let remove_btn = gtk::Button::new();
+                    remove_btn.set_icon_name("list-remove-symbolic");
+                    remove_btn.set_tooltip_text(Some("Remover del contexto"));
+                    remove_btn.add_css_class("flat");
+                    remove_btn.add_css_class("circular");
+                    remove_btn.add_css_class("chat-context-remove");
+
+                    let note_name = note.name().to_string();
+                    let sender = self.app_sender.borrow().clone();
+                    remove_btn.connect_clicked(move |_| {
+                        if let Some(s) = &sender {
+                            s.input(AppMsg::DetachNoteFromContext(note_name.clone()));
+                        }
+                    });
+                    row.append(&remove_btn);
+
+                    self.chat_context_list.append(&row);
+                }
+            }
         }
     }
 }
