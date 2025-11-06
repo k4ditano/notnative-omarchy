@@ -19,6 +19,10 @@ pub enum MCPToolCall {
         name: String,
         content: String,
     },
+    AppendToNote {
+        name: String,
+        content: String,
+    },
     DeleteNote {
         name: String,
     },

@@ -35,6 +35,9 @@ impl MCPToolExecutor {
             MCPToolCall::UpdateNote { name, content } => {
                 self.update_note(&name, &content)
             }
+            MCPToolCall::AppendToNote { name, content } => {
+                self.append_to_note(&name, &content)
+            }
             MCPToolCall::DeleteNote { name } => {
                 self.delete_note(&name)
             }
@@ -218,6 +221,62 @@ impl MCPToolExecutor {
                     }
                     Err(e) => Ok(MCPToolResult::error(format!(
                         "Error escribiendo nota '{}': {}",
+                        name, e
+                    ))),
+                }
+            }
+            Ok(None) => Ok(MCPToolResult::error(format!(
+                "Nota '{}' no encontrada",
+                name
+            ))),
+            Err(e) => Ok(MCPToolResult::error(format!(
+                "Error buscando nota '{}': {}",
+                name, e
+            ))),
+        }
+    }
+
+    fn append_to_note(&self, name: &str, content: &str) -> Result<MCPToolResult> {
+        match self.notes_dir.find_note(name) {
+            Ok(Some(note)) => {
+                // Leer contenido actual
+                match note.read() {
+                    Ok(current_content) => {
+                        // Agregar nuevo contenido al final
+                        let new_content = if current_content.is_empty() {
+                            content.to_string()
+                        } else {
+                            format!("{}\n\n{}", current_content, content)
+                        };
+
+                        // Escribir contenido actualizado
+                        match note.write(&new_content) {
+                            Ok(_) => {
+                                // Reindexar en BD
+                                if let Err(e) = self.notes_db.borrow().index_note(
+                                    name,
+                                    note.path().to_str().unwrap_or(""),
+                                    &new_content,
+                                    None,
+                                ) {
+                                    eprintln!("Error reindexando nota: {}", e);
+                                }
+
+                                Ok(MCPToolResult::success(json!({
+                                    "note_name": name,
+                                    "message": format!("✓ Contenido agregado a '{}' exitosamente", name),
+                                    "new_size": new_content.len(),
+                                    "appended_chars": content.len()
+                                })))
+                            }
+                            Err(e) => Ok(MCPToolResult::error(format!(
+                                "Error escribiendo nota '{}': {}",
+                                name, e
+                            ))),
+                        }
+                    }
+                    Err(e) => Ok(MCPToolResult::error(format!(
+                        "Error leyendo nota '{}': {}",
                         name, e
                     ))),
                 }

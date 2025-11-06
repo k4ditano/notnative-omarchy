@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
@@ -15,6 +16,16 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::core::database::NotesDatabase;
 use crate::core::note_file::NotesDirectory;
 use crate::mcp::{MCPToolCall, MCPToolExecutor};
+
+/// Señaliza cambios en las notas para que la UI se actualice
+fn signal_notes_changed() {
+    let signal_path = std::env::temp_dir().join("notnative_mcp_update.signal");
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let _ = fs::write(&signal_path, timestamp.to_string());
+}
 
 /// Estado compartido del servidor MCP (thread-safe)
 #[derive(Clone)]
@@ -153,14 +164,34 @@ async fn call_tool(
 
     match serde_json::from_value::<MCPToolCall>(tool_call_json) {
         Ok(tool_call) => {
+            // Verificar si es una herramienta que modifica archivos
+            let modifies_files = matches!(
+                tool_call,
+                MCPToolCall::CreateNote { .. }
+                    | MCPToolCall::UpdateNote { .. }
+                    | MCPToolCall::AppendToNote { .. }
+                    | MCPToolCall::DeleteNote { .. }
+                    | MCPToolCall::RenameNote { .. }
+                    | MCPToolCall::DuplicateNote { .. }
+                    | MCPToolCall::MoveNote { .. }
+                    | MCPToolCall::CreateFolder { .. }
+            );
+
             // Ejecutar la herramienta
             match executor.execute(tool_call) {
-                Ok(result) => Json(JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: request.id,
-                    result: Some(serde_json::to_value(result).unwrap_or(serde_json::json!({}))),
-                    error: None,
-                }),
+                Ok(result) => {
+                    // Si modificó archivos, señalizar cambio
+                    if modifies_files && result.success {
+                        signal_notes_changed();
+                    }
+
+                    Json(JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: Some(serde_json::to_value(result).unwrap_or(serde_json::json!({}))),
+                        error: None,
+                    })
+                }
                 Err(e) => Json(JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id,

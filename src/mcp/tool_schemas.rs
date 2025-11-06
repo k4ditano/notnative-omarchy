@@ -66,6 +66,48 @@ pub fn get_core_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "append_to_note",
+                "description": "Agrega contenido al final de una nota existente. USA cuando el usuario diga: 'agrega', 'añade al final', 'append', 'continúa la nota'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Nombre de la nota a la que agregar contenido"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Contenido a agregar al final de la nota"
+                        }
+                    },
+                    "required": ["name", "content"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "append_to_note",
+                "description": "Agrega contenido al final de una nota existente. USA cuando el usuario diga: 'agrega', 'añade al final', 'append', 'continúa la nota'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Nombre de la nota a la que agregar contenido"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Contenido a agregar al final de la nota"
+                        }
+                    },
+                    "required": ["name", "content"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "list_notes",
                 "description": "Lista todas las notas. USA cuando el usuario diga: 'lista', 'muestra todas', 'qué notas tengo'.",
                 "parameters": {

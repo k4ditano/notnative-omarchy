@@ -170,6 +170,7 @@ pub struct MainApp {
     // MCP (Model Context Protocol)
     mcp_executor: Rc<RefCell<crate::mcp::MCPToolExecutor>>,
     mcp_registry: crate::mcp::MCPToolRegistry,
+    mcp_last_update_check: Rc<RefCell<u64>>, // Último timestamp verificado
 }
 
 #[derive(Debug)]
@@ -187,6 +188,10 @@ pub enum AppMsg {
     DeleteItem(String, bool),                // nombre, es_carpeta
     RenameItem(String, bool),                // nombre, es_carpeta
     RefreshSidebar,
+    CheckMCPUpdates, // Nuevo: verificar si MCP modificó notas
+    MinimizeToTray,  // Minimizar a bandeja del sistema
+    ShowWindow,      // Mostrar ventana desde bandeja
+    QuitApp,         // Cerrar completamente la aplicación
     KeyPress {
         key: String,
         modifiers: KeyModifiers,
@@ -1646,10 +1651,18 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             chat_tokens_progress,
             mcp_executor,
             mcp_registry,
+            mcp_last_update_check: Rc::new(RefCell::new(0)),
         };
 
         // Guardar el sender en el modelo
         *model.app_sender.borrow_mut() = Some(sender.clone());
+
+        // Iniciar monitoreo de cambios MCP cada 2 segundos
+        let sender_clone = sender.clone();
+        glib::timeout_add_seconds_local(2, move || {
+            sender_clone.input(AppMsg::CheckMCPUpdates);
+            glib::ControlFlow::Continue
+        });
 
         // Crear acciones para el menú contextual
         let rename_action = gtk::gio::SimpleAction::new("rename", None);
@@ -1749,13 +1762,14 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         }
         widgets.main_window.add_controller(shortcuts);
 
-        // Conectar señal de cierre para guardar antes de cerrar
+        // Conectar señal de cierre para minimizar a bandeja en lugar de cerrar
         widgets.main_window.connect_close_request(gtk::glib::clone!(
             #[strong]
             sender,
             move |_| {
                 sender.input(AppMsg::SaveCurrentNote);
-                gtk::glib::Propagation::Proceed
+                sender.input(AppMsg::MinimizeToTray);
+                gtk::glib::Propagation::Stop // Prevenir el cierre
             }
         ));
 
@@ -2610,6 +2624,9 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             gtk::glib::ControlFlow::Continue
         });
 
+        // Crear system tray icon
+        crate::system_tray::create_system_tray(sender.clone());
+
         ComponentParts { model, widgets }
     }
 
@@ -2993,6 +3010,43 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             AppMsg::RefreshSidebar => {
                 self.populate_notes_list(&sender);
                 *self.is_populating_list.borrow_mut() = false;
+            }
+
+            AppMsg::MinimizeToTray => {
+                println!("📱 Minimizando a bandeja del sistema...");
+                self.main_window.set_visible(false);
+            }
+
+            AppMsg::ShowWindow => {
+                println!("📱 Mostrando ventana desde bandeja...");
+                self.main_window.set_visible(true);
+                self.main_window.present();
+            }
+
+            AppMsg::QuitApp => {
+                println!("👋 Cerrando aplicación completamente...");
+                sender.input(AppMsg::SaveCurrentNote);
+
+                // Limpiar archivos temporales
+                let _ = std::fs::remove_file("/tmp/notnative.lock");
+                let _ = std::fs::remove_file("/tmp/notnative.control");
+
+                std::process::exit(0);
+            }
+
+            AppMsg::CheckMCPUpdates => {
+                // Verificar si hay archivo de señal de cambios MCP
+                let signal_path = std::env::temp_dir().join("notnative_mcp_update.signal");
+                if let Ok(content) = std::fs::read_to_string(&signal_path) {
+                    if let Ok(timestamp) = content.trim().parse::<u64>() {
+                        let last_check = *self.mcp_last_update_check.borrow();
+                        if timestamp > last_check {
+                            println!("🔄 Detectados cambios desde MCP, actualizando sidebar...");
+                            *self.mcp_last_update_check.borrow_mut() = timestamp;
+                            sender.input(AppMsg::RefreshSidebar);
+                        }
+                    }
+                }
             }
 
             AppMsg::GtkInsertText { offset, text } => {

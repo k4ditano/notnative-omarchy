@@ -29,6 +29,7 @@ mod core;
 mod i18n;
 mod mcp;
 mod music_player;
+mod system_tray;
 mod youtube_server;
 mod youtube_transcript;
 
@@ -134,6 +135,41 @@ fn load_theme_css() -> (String, bool) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Single instance detection
+    let lock_file_path = "/tmp/notnative.lock";
+
+    // Verificar si ya existe una instancia
+    if std::path::Path::new(lock_file_path).exists() {
+        // Leer el PID del lock file
+        if let Ok(pid_str) = std::fs::read_to_string(lock_file_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                // Verificar si el proceso realmente existe
+                let proc_path = format!("/proc/{}", pid);
+                if std::path::Path::new(&proc_path).exists() {
+                    eprintln!("❌ NotNative ya está corriendo (PID: {})", pid);
+                    eprintln!(
+                        "💡 Si crees que esto es un error, elimina: {}",
+                        lock_file_path
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        // Si llegamos aquí, el lock file existe pero el proceso no, lo eliminamos
+        let _ = std::fs::remove_file(lock_file_path);
+    }
+
+    // Crear lock file con nuestro PID
+    let pid = std::process::id();
+    std::fs::write(lock_file_path, pid.to_string())?;
+
+    // Asegurar que se elimine el lock file al salir
+    let lock_cleanup = lock_file_path.to_string();
+    ctrlc::set_handler(move || {
+        let _ = std::fs::remove_file(&lock_cleanup);
+        std::process::exit(0);
+    })?;
+
     // Inicializar GTK primero
     gtk::init().expect("No se pudo inicializar GTK");
     glib::set_application_name("NotNative");

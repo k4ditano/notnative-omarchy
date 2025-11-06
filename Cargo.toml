@@ -38,6 +38,9 @@ axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 hyper = "1.0"
 
+# System management
+ctrlc = "3.4"
+
 [features]
 default = ["sqlite-bundled"]
 sqlite-bundled = ["rusqlite/bundled"]
