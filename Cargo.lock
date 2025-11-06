@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "notnative-app"
-version = "0.1.4"
+version = "0.1.5-preview"
 dependencies = [
  "anyhow",
  "ashpd",

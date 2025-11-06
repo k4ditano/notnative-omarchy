@@ -810,7 +810,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
         // Crear popover del reproductor de música
         let music_search_entry = gtk::SearchEntry::new();
-        music_search_entry.set_placeholder_text(Some("Buscar música en YouTube..."));
+        music_search_entry.set_placeholder_text(Some(&i18n.borrow().t("music_search_placeholder")));
         music_search_entry.set_hexpand(true);
 
         let music_results_list = gtk::ListBox::new();
@@ -823,7 +823,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         music_results_scroll.set_max_content_height(300);
         music_results_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
 
-        let music_now_playing_label = gtk::Label::new(Some("No hay música reproduciéndose"));
+        let music_now_playing_label = gtk::Label::new(Some(&i18n.borrow().t("no_music_playing")));
         music_now_playing_label.set_xalign(0.0);
         music_now_playing_label.set_wrap(false);
         music_now_playing_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -840,62 +840,62 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
         let music_play_pause_btn = gtk::Button::new();
         music_play_pause_btn.set_icon_name("media-playback-start-symbolic");
-        music_play_pause_btn.set_tooltip_text(Some("Reproducir/Pausar (Espacio)"));
+        music_play_pause_btn.set_tooltip_text(Some(&i18n.borrow().t("music_play_pause")));
         music_play_pause_btn.add_css_class("flat");
         music_play_pause_btn.add_css_class("circular");
 
         let music_stop_btn = gtk::Button::new();
         music_stop_btn.set_icon_name("media-playback-stop-symbolic");
-        music_stop_btn.set_tooltip_text(Some("Detener"));
+        music_stop_btn.set_tooltip_text(Some(&i18n.borrow().t("music_stop")));
         music_stop_btn.add_css_class("flat");
         music_stop_btn.add_css_class("circular");
 
         let music_back_btn = gtk::Button::new();
         music_back_btn.set_icon_name("media-seek-backward-symbolic");
-        music_back_btn.set_tooltip_text(Some("Retroceder 5s"));
+        music_back_btn.set_tooltip_text(Some(&i18n.borrow().t("music_seek_back")));
         music_back_btn.add_css_class("flat");
         music_back_btn.add_css_class("circular");
 
         let music_forward_btn = gtk::Button::new();
         music_forward_btn.set_icon_name("media-seek-forward-symbolic");
-        music_forward_btn.set_tooltip_text(Some("Avanzar 5s"));
+        music_forward_btn.set_tooltip_text(Some(&i18n.borrow().t("music_seek_forward")));
         music_forward_btn.add_css_class("flat");
         music_forward_btn.add_css_class("circular");
 
         let music_vol_down_btn = gtk::Button::new();
         music_vol_down_btn.set_icon_name("audio-volume-low-symbolic");
-        music_vol_down_btn.set_tooltip_text(Some("Bajar volumen"));
+        music_vol_down_btn.set_tooltip_text(Some(&i18n.borrow().t("music_volume_down")));
         music_vol_down_btn.add_css_class("flat");
         music_vol_down_btn.add_css_class("circular");
 
         let music_vol_up_btn = gtk::Button::new();
         music_vol_up_btn.set_icon_name("audio-volume-high-symbolic");
-        music_vol_up_btn.set_tooltip_text(Some("Subir volumen"));
+        music_vol_up_btn.set_tooltip_text(Some(&i18n.borrow().t("music_volume_up")));
         music_vol_up_btn.add_css_class("flat");
         music_vol_up_btn.add_css_class("circular");
 
         // Botones de playlist
         let music_prev_btn = gtk::Button::new();
         music_prev_btn.set_icon_name("media-skip-backward-symbolic");
-        music_prev_btn.set_tooltip_text(Some("Canción anterior"));
+        music_prev_btn.set_tooltip_text(Some(&i18n.borrow().t("music_previous_song")));
         music_prev_btn.add_css_class("flat");
         music_prev_btn.add_css_class("circular");
 
         let music_next_btn = gtk::Button::new();
         music_next_btn.set_icon_name("media-skip-forward-symbolic");
-        music_next_btn.set_tooltip_text(Some("Siguiente canción"));
+        music_next_btn.set_tooltip_text(Some(&i18n.borrow().t("music_next_song")));
         music_next_btn.add_css_class("flat");
         music_next_btn.add_css_class("circular");
 
         let music_repeat_btn = gtk::Button::new();
         music_repeat_btn.set_icon_name("media-playlist-repeat-symbolic");
-        music_repeat_btn.set_tooltip_text(Some("Repetir: OFF"));
+        music_repeat_btn.set_tooltip_text(Some(&i18n.borrow().t("music_repeat_off")));
         music_repeat_btn.add_css_class("flat");
         music_repeat_btn.add_css_class("circular");
 
         let music_shuffle_btn = gtk::Button::new();
         music_shuffle_btn.set_icon_name("media-playlist-shuffle-symbolic");
-        music_shuffle_btn.set_tooltip_text(Some("Aleatorio: OFF"));
+        music_shuffle_btn.set_tooltip_text(Some(&i18n.borrow().t("music_shuffle_off")));
         music_shuffle_btn.add_css_class("flat");
         music_shuffle_btn.add_css_class("circular");
 
@@ -912,7 +912,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         // Botón para abrir gestor de playlists (MenuButton)
         let music_playlist_btn = gtk::MenuButton::new();
         music_playlist_btn.set_icon_name("view-list-symbolic");
-        music_playlist_btn.set_tooltip_text(Some("Gestionar playlists"));
+        music_playlist_btn.set_tooltip_text(Some(&i18n.borrow().t("music_manage_playlists")));
         music_playlist_btn.add_css_class("flat");
         music_playlist_btn.add_css_class("circular");
 

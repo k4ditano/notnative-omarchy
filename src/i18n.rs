@@ -337,6 +337,87 @@ impl I18n {
         );
         translations.insert("transcript_section", ("📝 Transcripción", "📝 Transcript"));
 
+        // Music Player
+        translations.insert(
+            "music_search_placeholder",
+            ("Buscar música en YouTube...", "Search music on YouTube..."),
+        );
+        translations.insert(
+            "no_music_playing",
+            ("No hay música reproduciéndose", "No music playing"),
+        );
+        translations.insert(
+            "music_play_pause",
+            ("Reproducir/Pausar (Espacio)", "Play/Pause (Space)"),
+        );
+        translations.insert("music_stop", ("Detener", "Stop"));
+        translations.insert("music_seek_back", ("Retroceder 5s", "Seek back 5s"));
+        translations.insert("music_seek_forward", ("Avanzar 5s", "Seek forward 5s"));
+        translations.insert("music_volume_down", ("Bajar volumen", "Lower volume"));
+        translations.insert("music_volume_up", ("Subir volumen", "Raise volume"));
+        translations.insert("music_previous_song", ("Canción anterior", "Previous song"));
+        translations.insert("music_next_song", ("Siguiente canción", "Next song"));
+        translations.insert("music_repeat_off", ("Repetir: OFF", "Repeat: OFF"));
+        translations.insert("music_repeat_one", ("Repetir: UNA", "Repeat: ONE"));
+        translations.insert("music_repeat_all", ("Repetir: TODAS", "Repeat: ALL"));
+        translations.insert("music_shuffle_off", ("Aleatorio: OFF", "Shuffle: OFF"));
+        translations.insert("music_shuffle_on", ("Aleatorio: ON", "Shuffle: ON"));
+        translations.insert(
+            "music_manage_playlists",
+            ("Gestionar playlists", "Manage playlists"),
+        );
+        translations.insert(
+            "music_playback_queue",
+            ("Cola de reproducción", "Playback queue"),
+        );
+        translations.insert("music_loading", ("Cargando...", "Loading..."));
+        translations.insert("music_add_to_queue", ("Añadir a cola", "Add to queue"));
+        translations.insert(
+            "music_remove_from_queue",
+            ("Eliminar de cola", "Remove from queue"),
+        );
+        translations.insert("music_new_playlist", ("Nueva playlist", "New playlist"));
+        translations.insert("music_load_playlist", ("Cargar playlist", "Load playlist"));
+        translations.insert("music_save_playlist", ("Guardar playlist", "Save playlist"));
+        translations.insert(
+            "music_playlist_name",
+            ("Nombre de la playlist", "Playlist name"),
+        );
+
+        // AI Chat
+        translations.insert("ai_chat", ("Chat IA", "AI Chat"));
+        translations.insert(
+            "ai_chat_placeholder",
+            (
+                "Escribe un mensaje para el asistente IA...",
+                "Type a message for the AI assistant...",
+            ),
+        );
+        translations.insert("ai_send_message", ("Enviar mensaje", "Send message"));
+        translations.insert("ai_thinking", ("Pensando...", "Thinking..."));
+        translations.insert("ai_model", ("Modelo", "Model"));
+        translations.insert("ai_temperature", ("Temperatura", "Temperature"));
+        translations.insert("ai_api_key", ("API Key", "API Key"));
+        translations.insert("ai_openai", ("OpenAI", "OpenAI"));
+        translations.insert("ai_openrouter", ("OpenRouter", "OpenRouter"));
+        translations.insert(
+            "ai_api_key_placeholder",
+            ("Ingresa tu API key...", "Enter your API key..."),
+        );
+        translations.insert("ai_save", ("Guardar", "Save"));
+        translations.insert("ai_cancel", ("Cancelar", "Cancel"));
+        translations.insert(
+            "ai_no_key_configured",
+            ("No hay API key configurada", "No API key configured"),
+        );
+        translations.insert(
+            "ai_configure_key",
+            (
+                "Configurar API key en Preferencias",
+                "Configure API key in Preferences",
+            ),
+        );
+
         Self {
             language,
             translations,
