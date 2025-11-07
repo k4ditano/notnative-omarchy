@@ -1,6 +1,6 @@
 [package]
 name = "notnative-app"
-version = "0.1.5-preview"
+version = "0.1.5-release"
 edition = "2024"
 
 [dependencies]
