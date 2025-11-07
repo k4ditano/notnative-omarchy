@@ -14,6 +14,18 @@ Built with ❤️ for [Omarchy OS](https://omarchy.org) by [k4ditano](https://gi
 
 ---
 
+## 📚 Documentation
+
+- **[MCP Integration Guide](docs/MCP_INTEGRATION.md)** - Complete guide for the Model Context Protocol server, including:
+  - 8 available tools (create_note, read_note, update_note, delete_note, list_notes, search_notes, add_tags, append_to_note)
+  - Remote access via tunnels (Cloudflare, Tailscale, ngrok, SSH, WireGuard)
+  - 7 practical automation examples (iOS Shortcuts, Telegram bot, Gmail sync, Notion sync, screenshots, Habitica, and more)
+  - Security best practices and troubleshooting
+  
+- **[Background Control Guide](docs/BACKGROUND_CONTROL.md)** - Guide for background mode and external control system
+
+---
+
 ## 🌟 About
 
 **NotNative** is a native desktop note-taking application designed specifically for **Omarchy OS**, featuring seamless integration with the Omarchy theming system. Built with modern technologies and vim-inspired commands, it delivers maximum speed and efficiency for power users.
