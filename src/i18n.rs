@@ -412,8 +412,38 @@ impl I18n {
             "chat_attach_note",
             ("Adjuntar nota actual", "Attach current note"),
         );
+        translations.insert(
+            "chat_attach_note_dialog_title",
+            ("Adjuntar nota al contexto", "Attach note to context"),
+        );
+        translations.insert("chat_attach_button", ("Adjuntar", "Attach"));
         translations.insert("chat_clear_context", ("Limpiar contexto", "Clear context"));
         translations.insert("chat_clear_history", ("Borrar historial", "Clear history"));
+        translations.insert(
+            "chat_clear_history_confirm_title",
+            (
+                "¿Borrar todo el historial de chat?",
+                "Delete all chat history?",
+            ),
+        );
+        translations.insert(
+            "chat_clear_history_confirm_message",
+            (
+                "Esta acción eliminará permanentemente todo el historial de conversaciones guardado. No se puede deshacer.",
+                "This action will permanently delete all saved conversation history. This cannot be undone.",
+            ),
+        );
+        translations.insert(
+            "chat_history_cleared",
+            ("Historial borrado", "History cleared"),
+        );
+        translations.insert(
+            "chat_history_cleared_message",
+            (
+                "Se ha eliminado todo el historial de conversaciones",
+                "All conversation history has been deleted",
+            ),
+        );
         translations.insert(
             "music_player_title",
             ("Reproductor de Música", "Music Player"),
@@ -448,6 +478,14 @@ impl I18n {
                 "Configurar API key en Preferencias",
                 "Configure API key in Preferences",
             ),
+        );
+        translations.insert(
+            "ai_free_models",
+            ("═══ MODELOS GRATUITOS ═══", "═══ FREE MODELS ═══"),
+        );
+        translations.insert(
+            "ai_paid_models",
+            ("═══ MODELOS DE PAGO ═══", "═══ PAID MODELS ═══"),
         );
 
         // MCP Messages

@@ -37,6 +37,13 @@ struct LinkSpan {
 }
 
 #[derive(Debug, Clone)]
+struct HeadingAnchor {
+    id: String,       // ID del heading (ej: "conexión-al-mcp-server")
+    line_offset: i32, // Posición del heading en el buffer
+    text: String,     // Texto del heading
+}
+
+#[derive(Debug, Clone)]
 struct TagSpan {
     start: i32,
     end: i32,
@@ -109,6 +116,7 @@ pub struct MainApp {
     renaming_item: Rc<RefCell<Option<(String, bool)>>>, // (nombre, es_carpeta)
     main_window: gtk::ApplicationWindow,
     link_spans: Rc<RefCell<Vec<LinkSpan>>>,
+    heading_anchors: Rc<RefCell<Vec<HeadingAnchor>>>,
     tag_spans: Rc<RefCell<Vec<TagSpan>>>,
     youtube_video_spans: Rc<RefCell<Vec<YouTubeVideoSpan>>>,
     tags_menu_button: gtk::MenuButton,
@@ -173,9 +181,12 @@ pub struct MainApp {
     mcp_last_update_check: Rc<RefCell<u64>>, // Último timestamp verificado
     // System Tray - Estado de visibilidad compartido
     window_visible: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    // File Watcher - Monitorea cambios en el filesystem
+    #[allow(dead_code)]
+    file_watcher: Option<crate::file_watcher::FileWatcher>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AppMsg {
     ToggleTheme,
     #[allow(dead_code)]
@@ -190,10 +201,11 @@ pub enum AppMsg {
     DeleteItem(String, bool),                // nombre, es_carpeta
     RenameItem(String, bool),                // nombre, es_carpeta
     RefreshSidebar,
-    CheckMCPUpdates, // Nuevo: verificar si MCP modificó notas
-    MinimizeToTray,  // Minimizar a bandeja del sistema
-    ShowWindow,      // Mostrar ventana desde bandeja
-    QuitApp,         // Cerrar completamente la aplicación
+    ExpandFolder(String), // Expandir una carpeta específica
+    CheckMCPUpdates,      // Nuevo: verificar si MCP modificó notas
+    MinimizeToTray,       // Minimizar a bandeja del sistema
+    ShowWindow,           // Mostrar ventana desde bandeja
+    QuitApp,              // Cerrar completamente la aplicación
     KeyPress {
         key: String,
         modifiers: KeyModifiers,
@@ -222,6 +234,7 @@ pub enum AppMsg {
     ShowPreferences,
     ShowKeyboardShortcuts,
     ShowAboutDialog,
+    ShowMCPServerInfo,
     ChangeLanguage(Language),
     ReloadConfig,                // Recargar configuración desde disco
     InsertImage,                 // Abrir diálogo para seleccionar imagen
@@ -243,6 +256,7 @@ pub enum AppMsg {
         video_id: String,
         transcript: String,
     }, // Actualizar con transcripción obtenida
+    ScrollToAnchor(String),      // Hacer scroll a un heading por su ID (anchor link)
     MoveNoteToFolder {
         note_name: String,
         folder_name: Option<String>,
@@ -286,13 +300,14 @@ pub enum AppMsg {
     ExitChatMode,                  // Salir del modo Chat AI
     SendChatMessage(String),       // Enviar mensaje a la IA
     ReceiveChatResponse(String),   // Recibir respuesta de la IA
-    ShowAttachNoteDialog,          // Mostrar diálogo para adjuntar nota
-    AttachNoteToContext(String),   // Adjuntar nota al contexto
+    UpdateChatStatus(String), // Actualizar el indicador de estado (ej: "Leyendo nota...", "Pensando...")
+    ShowAttachNoteDialog,     // Mostrar diálogo para adjuntar nota
+    AttachNoteToContext(String), // Adjuntar nota al contexto
     DetachNoteFromContext(String), // Quitar nota del contexto
-    ClearChatContext,              // Limpiar contexto
-    ClearChatHistory,              // Borrar historial de chat de la BD
-    ConfirmClearChatHistory,       // Confirmar borrado (después del diálogo)
-    UpdateChatTokenCount,          // Actualizar contador de tokens
+    ClearChatContext,         // Limprar contexto
+    ClearChatHistory,         // Borrar historial de chat de la BD
+    ConfirmClearChatHistory,  // Confirmar borrado (después del diálogo)
+    UpdateChatTokenCount,     // Actualizar contador de tokens
 }
 
 #[component(pub)]
@@ -652,10 +667,10 @@ impl SimpleComponent for MainApp {
             notes_db_rc,
             i18n.clone(),
         )));
-        // Usar solo herramientas core para mejor rendimiento y precisión
-        let mcp_registry = crate::mcp::MCPToolRegistry::new_core();
+        // Cargar TODAS las herramientas MCP disponibles
+        let mcp_registry = crate::mcp::MCPToolRegistry::new();
         println!(
-            "Sistema MCP inicializado con {} herramientas core",
+            "Sistema MCP inicializado con {} herramientas",
             mcp_registry.get_tools().len()
         );
 
@@ -1498,6 +1513,42 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         ));
         chat_input_view.add_controller(focus_controller);
 
+        // Agregar controlador para Enter envía mensaje (Shift+Enter = nueva línea)
+        let input_key_controller = gtk::EventControllerKey::new();
+        let placeholder_for_enter = chat_placeholder.clone();
+        input_key_controller.connect_key_pressed(gtk::glib::clone!(
+            #[strong]
+            sender,
+            #[strong]
+            chat_input_buffer,
+            move |_controller, keyval, _keycode, modifiers| {
+                let key_name = keyval.name().map(|s| s.to_string()).unwrap_or_default();
+
+                // ESC: Salir del modo chat
+                if key_name == "Escape" {
+                    sender.input(AppMsg::ExitChatMode);
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Enter sin modificadores: enviar mensaje
+                if key_name == "Return" && !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                    let start = chat_input_buffer.start_iter();
+                    let end = chat_input_buffer.end_iter();
+                    let text = chat_input_buffer.text(&start, &end, false).to_string();
+
+                    if !text.trim().is_empty() && text != placeholder_for_enter {
+                        sender.input(AppMsg::SendChatMessage(text));
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Shift+Enter: nueva línea (comportamiento por defecto)
+                gtk::glib::Propagation::Proceed
+            }
+        ));
+        chat_input_view.add_controller(input_key_controller);
+
         input_scroll.set_child(Some(&chat_input_view));
         input_wrapper.append(&input_scroll);
         input_area.append(&input_wrapper);
@@ -1575,6 +1626,86 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             .content_stack
             .add_named(&chat_ai_container, Some("chat"));
 
+        // Escaneo inicial: sincronizar BD con filesystem al arrancar
+        println!("🔍 Escaneando directorio de notas para sincronizar BD...");
+        let scan_start = std::time::Instant::now();
+        let mut indexed_count = 0;
+
+        // Función recursiva para escanear carpetas
+        fn scan_directory(
+            path: &std::path::Path,
+            notes_db: &crate::core::database::NotesDatabase,
+            root: &std::path::Path,
+            indexed_count: &mut usize,
+        ) {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        let entry_path = entry.path();
+
+                        if metadata.is_file() && entry_path.extension().map_or(false, |e| e == "md")
+                        {
+                            // Es un archivo .md, indexarlo
+                            if let (Ok(content), Some(name)) = (
+                                std::fs::read_to_string(&entry_path),
+                                entry_path.file_stem().and_then(|s| s.to_str()),
+                            ) {
+                                // Detectar carpeta relativa al root
+                                let folder = entry_path
+                                    .parent()
+                                    .and_then(|p| p.strip_prefix(root).ok())
+                                    .filter(|p| !p.as_os_str().is_empty())
+                                    .and_then(|p| p.to_str())
+                                    .map(|s| s.to_string());
+
+                                let _ = notes_db.index_note(
+                                    name,
+                                    entry_path.to_str().unwrap_or(""),
+                                    &content,
+                                    folder.as_deref(),
+                                );
+                                *indexed_count += 1;
+                            }
+                        } else if metadata.is_dir() {
+                            // Es una carpeta, escanear recursivamente
+                            scan_directory(&entry_path, notes_db, root, indexed_count);
+                        }
+                    }
+                }
+            }
+        }
+
+        let notes_root = notes_dir.root().to_path_buf();
+        scan_directory(&notes_root, &notes_db, &notes_root, &mut indexed_count);
+
+        let scan_duration = scan_start.elapsed();
+        println!(
+            "✅ Escaneo completado: {} notas indexadas en {:?}",
+            indexed_count, scan_duration
+        );
+
+        // Inicializar file watcher antes de crear el model
+        let file_watcher = {
+            let notes_path = notes_dir.root().to_path_buf();
+            let watcher_db =
+                std::sync::Arc::new(std::sync::Mutex::new(notes_db.clone_connection()));
+
+            match crate::file_watcher::create_notes_watcher(
+                notes_path,
+                watcher_db,
+                sender.input_sender().clone(),
+            ) {
+                Ok(watcher) => {
+                    println!("✅ File watcher activado");
+                    Some(watcher)
+                }
+                Err(e) => {
+                    eprintln!("⚠️ Error activando file watcher: {}", e);
+                    None
+                }
+            }
+        };
+
         let model = MainApp {
             theme,
             buffer: initial_buffer,
@@ -1605,6 +1736,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             renaming_item: Rc::new(RefCell::new(None)),
             main_window: widgets.main_window.clone(),
             link_spans: Rc::new(RefCell::new(Vec::new())),
+            heading_anchors: Rc::new(RefCell::new(Vec::new())),
             tag_spans: Rc::new(RefCell::new(Vec::new())),
             youtube_video_spans: Rc::new(RefCell::new(Vec::new())),
             tags_menu_button: widgets.tags_menu_button.clone(),
@@ -1665,6 +1797,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             mcp_registry,
             mcp_last_update_check: Rc::new(RefCell::new(0)),
             window_visible: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            file_watcher,
         };
 
         // Guardar el sender en el modelo
@@ -1725,6 +1858,11 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         model.apply_initial_translations();
 
         // Sincronizar contenido inicial con la vista
+        // Configurar TextView según el modo inicial (Normal)
+        text_view_actual.set_editable(false);
+        text_view_actual.set_cursor_visible(false);
+        println!("🔧 Modo inicial configurado: Normal (editable=false, cursor_visible=false)");
+
         model.sync_to_view();
         model.update_status_bar(&sender);
 
@@ -2032,11 +2170,20 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                                 .find(|span| offset >= span.start && offset < span.end)
                             {
                                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                                if let Err(err) = gtk::gio::AppInfo::launch_default_for_uri(
-                                    &link.url,
-                                    None::<&gtk::gio::AppLaunchContext>,
-                                ) {
-                                    eprintln!("Error al abrir enlace {}: {}", link.url, err);
+
+                                // Verificar si es un anchor link (comienza con #)
+                                if link.url.starts_with('#') {
+                                    // Es un enlace interno, hacer scroll al heading
+                                    let anchor_id = link.url[1..].to_string(); // Remover el #
+                                    sender.input(AppMsg::ScrollToAnchor(anchor_id));
+                                } else {
+                                    // Es un enlace externo, abrirlo
+                                    if let Err(err) = gtk::gio::AppInfo::launch_default_for_uri(
+                                        &link.url,
+                                        None::<&gtk::gio::AppLaunchContext>,
+                                    ) {
+                                        eprintln!("Error al abrir enlace {}: {}", link.url, err);
+                                    }
                                 }
                                 return;
                             }
@@ -2837,10 +2984,17 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 }
             }
             AppMsg::CreateNewNote(name) => {
+                let is_folder_only = name.ends_with('/');
+
                 if let Err(e) = self.create_new_note(&name) {
-                    eprintln!("Error creando nota '{}': {}", name, e);
+                    eprintln!("Error creando '{}': {}", name, e);
+                } else if is_folder_only {
+                    // Solo se creó una carpeta, refrescar sidebar
+                    self.populate_notes_list(&sender);
+                    *self.is_populating_list.borrow_mut() = false;
+                    println!("📂 Carpeta creada y sidebar actualizado");
                 } else {
-                    // Sincronizar vista y actualizar UI
+                    // Se creó una nota, hacer el proceso completo
                     self.sync_to_view();
                     self.update_status_bar(&sender);
                     self.refresh_tags_display_with_sender(&sender);
@@ -2857,8 +3011,67 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             }
             AppMsg::UpdateCursorPosition(pos) => {
                 // Actualizar la posición del cursor cuando el usuario hace clic
-                self.cursor_position = pos;
+                // En modo Normal, GTK muestra texto limpio, entonces pos es posición display
+                // Necesitamos mapear a posición buffer, PERO solo si markdown está habilitado
+                let current_mode = *self.mode.borrow();
+                if current_mode == EditorMode::Normal && self.markdown_enabled {
+                    // En modo Normal, el texto mostrado es "limpio"
+                    // Necesitamos encontrar la posición correspondiente en el buffer original
+                    // Pero esto es muy costoso hacer en cada click
+                    // Mejor estrategia: buscar la línea y contar caracteres solo en esa línea
+
+                    let buffer_text = self.buffer.to_string();
+                    let clean_text = self.render_clean_markdown(&buffer_text);
+
+                    // Si pos está fuera de rango, usar el final
+                    if pos >= clean_text.chars().count() {
+                        self.cursor_position = buffer_text.chars().count();
+                    } else {
+                        // Usar map_buffer_pos_to_display al revés: probar posiciones cercanas
+                        // Empezar desde pos (probablemente cercano) y buscar hacia adelante/atrás
+                        let mut buffer_pos = pos.min(buffer_text.chars().count());
+                        let target_display = pos;
+
+                        // Buscar hacia adelante hasta encontrar la posición correcta
+                        for test_pos in buffer_pos..=buffer_text.chars().count() {
+                            let display = self.map_buffer_pos_to_display(&buffer_text, test_pos);
+                            if display >= target_display {
+                                buffer_pos = test_pos;
+                                break;
+                            }
+                        }
+
+                        self.cursor_position = buffer_pos;
+                    }
+                } else {
+                    self.cursor_position = pos;
+                }
             }
+
+            AppMsg::ScrollToAnchor(anchor_id) => {
+                // Buscar el heading con el ID especificado
+                if let Some(anchor) = self
+                    .heading_anchors
+                    .borrow()
+                    .iter()
+                    .find(|a| a.id == anchor_id)
+                    .cloned()
+                {
+                    // Crear un iterador en la posición del heading
+                    let mut iter = self.text_buffer.start_iter();
+                    iter.set_offset(anchor.line_offset);
+
+                    // Hacer scroll a esa posición
+                    self.text_view
+                        .scroll_to_iter(&mut iter, 0.0, true, 0.0, 0.1);
+
+                    // Opcionalmente, mostrar una notificación
+                    println!("📍 Navegando a: {}", anchor.text);
+                } else {
+                    eprintln!("⚠️ No se encontró el heading con ID: #{}", anchor_id);
+                }
+            }
+
             AppMsg::ShowCreateNoteDialog => {
                 self.show_create_note_dialog(&sender);
             }
@@ -3029,6 +3242,17 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 *self.is_populating_list.borrow_mut() = false;
             }
 
+            AppMsg::ExpandFolder(folder) => {
+                // Expandir carpeta si no está expandida
+                if !self.expanded_folders.contains(&folder) {
+                    self.expanded_folders.insert(folder.clone());
+                    println!("📂 Carpeta expandida automáticamente: {}", folder);
+                    // Refrescar sidebar para mostrar el contenido
+                    self.populate_notes_list(&sender);
+                    *self.is_populating_list.borrow_mut() = false;
+                }
+            }
+
             AppMsg::MinimizeToTray => {
                 println!("📱 Minimizando a bandeja del sistema...");
                 // Guardar cambios antes de minimizar
@@ -3095,6 +3319,39 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         if timestamp > last_check {
                             println!("🔄 Detectados cambios desde MCP, actualizando sidebar...");
                             *self.mcp_last_update_check.borrow_mut() = timestamp;
+
+                            // Recargar la nota actual si hay una abierta y no tiene cambios sin guardar
+                            if let Some(ref note) = self.current_note {
+                                if !self.has_unsaved_changes {
+                                    if let Ok(content) = note.read() {
+                                        println!(
+                                            "🔄 Recargando nota actual desde disco: {}",
+                                            note.name()
+                                        );
+
+                                        // Recargar contenido en el buffer
+                                        self.buffer = crate::core::NoteBuffer::from_text(&content);
+                                        self.cursor_position = 0;
+
+                                        // Actualizar TextView con flag de sincronización
+                                        *self.is_syncing_to_gtk.borrow_mut() = true;
+                                        let gtk_buffer = self.text_view.buffer();
+                                        gtk_buffer.set_text(&self.buffer.to_string());
+                                        *self.is_syncing_to_gtk.borrow_mut() = false;
+
+                                        // Renderizar según modo
+                                        self.sync_to_view();
+
+                                        // Actualizar UI
+                                        sender.input(AppMsg::RefreshTags);
+                                    }
+                                } else {
+                                    println!(
+                                        "⚠️ Nota actual tiene cambios sin guardar, no se recarga automáticamente"
+                                    );
+                                }
+                            }
+
                             sender.input(AppMsg::RefreshSidebar);
                         }
                     }
@@ -3329,6 +3586,10 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
             AppMsg::ShowAboutDialog => {
                 self.show_about_dialog();
+            }
+
+            AppMsg::ShowMCPServerInfo => {
+                self.show_mcp_server_info_dialog();
             }
 
             AppMsg::ChangeLanguage(new_language) => {
@@ -4199,7 +4460,15 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                                 };
 
                                 session.add_message(role.clone(), content.clone());
-                                self.append_chat_message(role, &content);
+
+                                // Detectar si es resultado de búsqueda y renderizar apropiadamente
+                                if role == crate::ai_chat::MessageRole::Assistant
+                                    && self.is_search_result(&content)
+                                {
+                                    self.append_search_results_widget(&content, &sender);
+                                } else {
+                                    self.append_chat_message(role, &content);
+                                }
                             }
 
                             // Cargar notas del contexto
@@ -4272,6 +4541,33 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 // Ocultar sidebar de contexto del chat
                 self.chat_split_view.set_position(0);
 
+                // Recargar la nota actual por si hubo cambios mientras estábamos en el chat
+                if let Some(ref note) = self.current_note {
+                    if !self.has_unsaved_changes {
+                        if let Ok(content) = note.read() {
+                            println!(
+                                "🔄 Recargando nota actual al salir del chat: {}",
+                                note.name()
+                            );
+
+                            // Recargar contenido en el buffer
+                            self.buffer = crate::core::NoteBuffer::from_text(&content);
+                            self.cursor_position = 0;
+
+                            // Actualizar TextView
+                            let gtk_buffer = self.text_view.buffer();
+                            gtk_buffer.set_text(&self.buffer.to_string());
+
+                            // Actualizar UI
+                            sender.input(AppMsg::RefreshTags);
+                        }
+                    } else {
+                        println!(
+                            "⚠️ Nota tiene cambios sin guardar, no se recarga al salir del chat"
+                        );
+                    }
+                }
+
                 // Cambiar a la página del editor en el Stack
                 self.content_stack.set_visible_child_name("editor");
                 self.text_view.grab_focus();
@@ -4300,8 +4596,8 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     // Limpiar input
                     self.chat_input_buffer.set_text("");
 
-                    // Mostrar indicador de "escribiendo..."
-                    self.append_chat_typing_indicator();
+                    // Mostrar indicador de "pensando..."
+                    self.append_chat_typing_indicator("Pensando...");
 
                     // Enviar a la API (async)
                     let session_clone = session.clone();
@@ -4327,6 +4623,8 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     // Clonar registry para uso en async
                     let mcp_registry = self.mcp_registry.clone();
                     let mcp_executor = self.mcp_executor.clone();
+                    let chat_history_list = self.chat_history_list.clone();
+                    let chat_session_id = *self.chat_session_id.borrow();
 
                     gtk::glib::spawn_future_local(async move {
                         let context = session_clone.build_context().unwrap_or_default();
@@ -4345,91 +4643,289 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         match crate::ai_client::create_client(&session_clone.model_config, &api_key)
                         {
                             Ok(client) => {
-                                // Enviar con soporte de tools
-                                match client
-                                    .send_message_with_tools(
-                                        &session_clone.messages,
-                                        &context,
-                                        Some(&mcp_registry),
-                                    )
-                                    .await
-                                {
-                                    Ok(ai_response) => {
-                                        // Si hay tool calls, ejecutarlos
-                                        if !ai_response.tool_calls.is_empty() {
-                                            println!(
-                                                "🔧 IA solicitó {} herramientas",
-                                                ai_response.tool_calls.len()
-                                            );
+                                // Loop de tool calls: permitir hasta 5 iteraciones
+                                let mut current_messages = session_clone.messages.clone();
+                                let max_iterations = 5;
+                                let mut iteration = 0;
+                                let mut needs_sidebar_refresh = false;
 
-                                            let mut tool_results = Vec::new();
-                                            let mut needs_sidebar_refresh = false;
+                                loop {
+                                    iteration += 1;
+                                    if iteration > max_iterations {
+                                        println!(
+                                            "⚠️ Máximo de iteraciones alcanzado ({})",
+                                            max_iterations
+                                        );
+                                        sender_clone.input(AppMsg::ReceiveChatResponse(
+                                            "⚠️ Se alcanzó el límite de iteraciones. La tarea puede estar incompleta.".to_string()
+                                        ));
+                                        break;
+                                    }
 
-                                            for tool_call in &ai_response.tool_calls {
-                                                println!("  → Ejecutando: {:?}", tool_call);
+                                    println!("🔄 Iteración {}/{}", iteration, max_iterations);
 
-                                                // Detectar si la herramienta modifica el sistema de archivos
-                                                let modifies_files = matches!(
-                                                    tool_call,
-                                                    MCPToolCall::CreateNote { .. }
-                                                        | MCPToolCall::DeleteNote { .. }
-                                                        | MCPToolCall::RenameNote { .. }
-                                                        | MCPToolCall::DuplicateNote { .. }
-                                                        | MCPToolCall::MoveNote { .. }
-                                                        | MCPToolCall::CreateFolder { .. }
-                                                        | MCPToolCall::CreateDailyNote { .. }
+                                    // Enviar con soporte de tools
+                                    match client
+                                        .send_message_with_tools(
+                                            &current_messages,
+                                            &context,
+                                            Some(&mcp_registry),
+                                        )
+                                        .await
+                                    {
+                                        Ok(ai_response) => {
+                                            // Si hay tool calls, ejecutarlos
+                                            if !ai_response.tool_calls.is_empty() {
+                                                println!(
+                                                    "🔧 IA solicitó {} herramientas",
+                                                    ai_response.tool_calls.len()
                                                 );
 
-                                                match mcp_executor
-                                                    .borrow()
-                                                    .execute(tool_call.clone())
-                                                {
-                                                    Ok(result) => {
-                                                        println!("    ✓ Resultado: {:?}", result);
-                                                        if modifies_files && result.success {
-                                                            needs_sidebar_refresh = true;
+                                                let mut tool_results = Vec::new();
+
+                                                for tool_call in &ai_response.tool_calls {
+                                                    println!("  → Ejecutando: {:?}", tool_call);
+
+                                                    // Actualizar el indicador de estado con la herramienta actual
+                                                    let status_msg =
+                                                        Self::tool_to_status_message(tool_call);
+                                                    sender_clone.input(AppMsg::UpdateChatStatus(
+                                                        status_msg,
+                                                    ));
+
+                                                    // Pequeña pausa para que se vea el cambio de estado en la UI
+                                                    // Usamos glib::timeout_future para dar tiempo a GTK a renderizar
+                                                    gtk::glib::timeout_future(
+                                                        std::time::Duration::from_millis(400),
+                                                    )
+                                                    .await;
+
+                                                    // Detectar si la herramienta modifica el sistema de archivos
+                                                    let modifies_files = matches!(
+                                                        tool_call,
+                                                        MCPToolCall::CreateNote { .. }
+                                                            | MCPToolCall::DeleteNote { .. }
+                                                            | MCPToolCall::RenameNote { .. }
+                                                            | MCPToolCall::DuplicateNote { .. }
+                                                            | MCPToolCall::MoveNote { .. }
+                                                            | MCPToolCall::CreateFolder { .. }
+                                                            | MCPToolCall::CreateDailyNote { .. }
+                                                    );
+
+                                                    match mcp_executor
+                                                        .borrow()
+                                                        .execute(tool_call.clone())
+                                                    {
+                                                        Ok(result) => {
+                                                            println!(
+                                                                "    ✓ Resultado: {:?}",
+                                                                result
+                                                            );
+                                                            if modifies_files && result.success {
+                                                                needs_sidebar_refresh = true;
+                                                            }
+                                                            tool_results.push(result);
                                                         }
-                                                        tool_results.push(result);
-                                                    }
-                                                    Err(e) => {
-                                                        println!("    ✗ Error: {}", e);
-                                                        tool_results.push(MCPToolResult::error(
+                                                        Err(e) => {
+                                                            println!("    ✗ Error: {}", e);
+                                                            tool_results.push(MCPToolResult::error(
                                                             format!(
                                                                 "Error ejecutando herramienta: {}",
                                                                 e
                                                             ),
                                                         ));
+                                                        }
                                                     }
                                                 }
-                                            }
 
-                                            // Separar resultados exitosos y fallidos
-                                            let mut successful_results = Vec::new();
-                                            let mut failed_results = Vec::new();
+                                                // Separar resultados exitosos y fallidos
+                                                let mut successful_results = Vec::new();
+                                                let mut failed_results = Vec::new();
+                                                let mut search_results_for_db = Vec::new(); // Para guardar en BD
 
-                                            for (idx, r) in tool_results.iter().enumerate() {
-                                                if r.success {
-                                                    // Extraer el campo "message" si existe
-                                                    if let Some(data) = &r.data {
-                                                        let msg = data
-                                                            .as_object()
-                                                            .and_then(|obj| obj.get("message"))
-                                                            .and_then(|v| v.as_str())
-                                                            .map(|s| s.to_string())
-                                                            .unwrap_or_else(|| {
-                                                                serde_json::to_string_pretty(data)
+                                                for (idx, r) in tool_results.iter().enumerate() {
+                                                    if r.success {
+                                                        // Extraer información del resultado
+                                                        if let Some(data) = &r.data {
+                                                            // Caso especial para búsquedas: mostrar los resultados
+                                                            if let Some(tool_call) =
+                                                                ai_response.tool_calls.get(idx)
+                                                            {
+                                                                let is_search = matches!(
+                                                                tool_call,
+                                                                MCPToolCall::SearchNotes { .. }
+                                                                    | MCPToolCall::FuzzySearch { .. }
+                                                                    | MCPToolCall::GetNotesWithTag { .. }
+                                                            );
+
+                                                                if is_search {
+                                                                    // Extraer lista de resultados
+                                                                    let results_list = data
+                                                                        .as_object()
+                                                                        .and_then(|obj| {
+                                                                            obj.get("results")
+                                                                                .or_else(|| {
+                                                                                    obj.get("notes")
+                                                                                })
+                                                                        })
+                                                                        .and_then(|v| v.as_array());
+
+                                                                    if let Some(results) =
+                                                                        results_list
+                                                                    {
+                                                                        let count = results.len();
+                                                                        if count > 0 {
+                                                                            // Preparar lista de nombres para texto
+                                                                            let notes_names: Vec<
+                                                                                &str,
+                                                                            > = results
+                                                                                .iter()
+                                                                                .filter_map(|v| {
+                                                                                    v.as_str()
+                                                                                })
+                                                                                .collect();
+
+                                                                            // Crear contenedor para resultados clickables (UI)
+                                                                            let results_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                                                                            results_row
+                                                                                .set_margin_top(6);
+                                                                            results_row
+                                                                                .set_margin_bottom(
+                                                                                    6,
+                                                                                );
+                                                                            results_row
+                                                                                .set_hexpand(true);
+                                                                            results_row
+                                                                                .add_css_class(
+                                                                                    "chat-row",
+                                                                                );
+                                                                            results_row.add_css_class("chat-row-assistant");
+                                                                            results_row.set_halign(
+                                                                                gtk::Align::Start,
+                                                                            );
+
+                                                                            let avatar =
+                                                                                gtk::Label::new(
+                                                                                    Some("🔍"),
+                                                                                );
+                                                                            avatar.add_css_class(
+                                                                                "chat-avatar",
+                                                                            );
+                                                                            avatar.add_css_class("chat-avatar-assistant");
+                                                                            avatar.set_valign(
+                                                                                gtk::Align::Start,
+                                                                            );
+
+                                                                            let bubble = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                                                                            bubble.add_css_class(
+                                                                                "chat-bubble",
+                                                                            );
+                                                                            bubble.add_css_class("chat-bubble-assistant");
+
+                                                                            let header =
+                                                                                gtk::Label::new(
+                                                                                    Some(&format!(
+                                                                                        "✓ {} nota(s) encontrada(s):",
+                                                                                        count
+                                                                                    )),
+                                                                                );
+                                                                            header.set_xalign(0.0);
+                                                                            header.add_css_class(
+                                                                                "heading",
+                                                                            );
+                                                                            bubble.append(&header);
+
+                                                                            // Crear botones clickables para cada resultado
+                                                                            for (i, note_name) in
+                                                                                notes_names
+                                                                                    .iter()
+                                                                                    .enumerate()
+                                                                            {
+                                                                                let note_btn = gtk::Button::builder()
+                                                                                .label(&format!("  {}. {}", i + 1, note_name))
+                                                                                .halign(gtk::Align::Start)
+                                                                                .build();
+                                                                                note_btn
+                                                                                    .add_css_class(
+                                                                                        "flat",
+                                                                                    );
+                                                                                note_btn
+                                                                                    .set_margin_top(
+                                                                                        2,
+                                                                                    );
+
+                                                                                let sender_for_btn =
+                                                                                    sender.clone();
+                                                                                let note_name_owned =
+                                                                                    note_name
+                                                                                        .to_string();
+                                                                                note_btn.connect_clicked(move |_| {
+                                                                                // Abrir la nota
+                                                                                sender_for_btn.input(AppMsg::LoadNote(note_name_owned.clone()));
+                                                                                // Salir del modo chat
+                                                                                sender_for_btn.input(AppMsg::ExitChatMode);
+                                                                            });
+
+                                                                                bubble.append(
+                                                                                    &note_btn,
+                                                                                );
+                                                                            }
+
+                                                                            results_row
+                                                                                .append(&avatar);
+                                                                            results_row
+                                                                                .append(&bubble);
+
+                                                                            // Insertar widget directamente en el chat
+                                                                            chat_history_list
+                                                                                .append(
+                                                                                    &results_row,
+                                                                                );
+
+                                                                            // Guardar versión texto SOLO para BD (no para UI actual)
+                                                                            let notes_str = notes_names
+                                                                            .iter()
+                                                                            .enumerate()
+                                                                            .map(|(i, name)| format!("  {}. {}", i + 1, name))
+                                                                            .collect::<Vec<_>>()
+                                                                            .join("\n");
+
+                                                                            search_results_for_db.push(format!(
+                                                                            "✓ {} nota(s) encontrada(s):\n{}",
+                                                                            count, notes_str
+                                                                        ));
+
+                                                                            // Continuar sin agregar a successful_results (ya mostramos widget)
+                                                                            continue;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Para otros casos, extraer el mensaje
+                                                            let msg = data
+                                                                .as_object()
+                                                                .and_then(|obj| obj.get("message"))
+                                                                .and_then(|v| v.as_str())
+                                                                .map(|s| s.to_string())
+                                                                .unwrap_or_else(|| {
+                                                                    serde_json::to_string_pretty(
+                                                                        data,
+                                                                    )
                                                                     .unwrap_or_default()
-                                                            });
-                                                        successful_results.push(msg);
+                                                                });
+                                                            successful_results.push(msg);
+                                                        } else {
+                                                            successful_results.push(
+                                                                "✓ Operación exitosa".to_string(),
+                                                            );
+                                                        }
                                                     } else {
-                                                        successful_results.push(
-                                                            "✓ Operación exitosa".to_string(),
-                                                        );
-                                                    }
-                                                } else {
-                                                    // Mostrar qué herramienta falló y por qué
-                                                    let tool_name =
-                                                        match &ai_response.tool_calls.get(idx) {
+                                                        // Mostrar qué herramienta falló y por qué
+                                                        let tool_name = match &ai_response
+                                                            .tool_calls
+                                                            .get(idx)
+                                                        {
                                                             Some(tool_call) => {
                                                                 format!("{:?}", tool_call)
                                                                     .split('{')
@@ -4439,70 +4935,99 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                                                             }
                                                             None => "Unknown".to_string(),
                                                         };
-                                                    let error_msg = r
-                                                        .error
-                                                        .as_deref()
-                                                        .unwrap_or("Error desconocido");
-                                                    failed_results.push(format!(
-                                                        "✗ {}: {}",
-                                                        tool_name, error_msg
-                                                    ));
+                                                        let error_msg = r
+                                                            .error
+                                                            .as_deref()
+                                                            .unwrap_or("Error desconocido");
+                                                        failed_results.push(format!(
+                                                            "✗ {}: {}",
+                                                            tool_name, error_msg
+                                                        ));
+                                                    }
                                                 }
-                                            }
 
-                                            // Construir mensaje final
-                                            let final_response = if !successful_results.is_empty()
-                                                || !failed_results.is_empty()
-                                            {
-                                                let mut parts = Vec::new();
+                                                // Construir mensaje final
+                                                let has_search_results =
+                                                    !search_results_for_db.is_empty();
+                                                let ai_explanation = ai_response.content.clone();
 
-                                                // Agregar resultados exitosos
+                                                // Construir mensaje de resultados para la IA
+                                                let mut tool_results_text = Vec::new();
                                                 if !successful_results.is_empty() {
-                                                    parts.push(successful_results.join("\n"));
+                                                    tool_results_text
+                                                        .extend(successful_results.clone());
                                                 }
-
-                                                // Agregar resultados fallidos
                                                 if !failed_results.is_empty() {
-                                                    parts.push(format!(
-                                                        "\n{}",
-                                                        failed_results.join("\n")
+                                                    tool_results_text
+                                                        .extend(failed_results.clone());
+                                                }
+                                                let tool_results_msg = tool_results_text.join("\n");
+
+                                                // Agregar respuesta de la IA al historial (si dio explicación)
+                                                if let Some(ref explanation) = ai_explanation {
+                                                    if !explanation.trim().is_empty() {
+                                                        current_messages
+                                                            .push(crate::ai_chat::ChatMessage::new(
+                                                            crate::ai_chat::MessageRole::Assistant,
+                                                            explanation.clone(),
+                                                            Vec::new(),
+                                                        ));
+                                                    }
+                                                }
+
+                                                // Agregar resultados de herramientas como mensaje del sistema
+                                                if !tool_results_msg.is_empty() {
+                                                    current_messages.push(crate::ai_chat::ChatMessage::new(
+                                                    crate::ai_chat::MessageRole::System,
+                                                    format!("Resultados de las herramientas ejecutadas:\n{}", tool_results_msg),
+                                                    Vec::new()
+                                                ));
+
+                                                    println!(
+                                                        "📨 Resultados enviados de vuelta a la IA. Continuando loop..."
+                                                    );
+
+                                                    // Mostrar "Pensando..." antes de continuar el loop
+                                                    sender_clone.input(AppMsg::UpdateChatStatus(
+                                                        "Pensando...".to_string(),
                                                     ));
-                                                }
 
-                                                let tools_msg = parts.join("\n");
+                                                    // Pequeña pausa para que se vea el cambio de estado
+                                                    gtk::glib::timeout_future(
+                                                        std::time::Duration::from_millis(400),
+                                                    )
+                                                    .await;
 
-                                                if let Some(content) = ai_response.content {
-                                                    format!("{}\n\n---\n\n{}", tools_msg, content)
-                                                } else {
-                                                    tools_msg
+                                                    // Continuar el loop para que la IA pueda procesar estos resultados
+                                                    continue;
                                                 }
-                                            } else if let Some(content) = ai_response.content {
-                                                content
                                             } else {
-                                                "⚠️ No se pudo completar la operación".to_string()
-                                            };
+                                                // No hay tool calls - esta es la respuesta final
+                                                let final_response =
+                                                    ai_response.content.unwrap_or_default();
+                                                sender_clone.input(AppMsg::ReceiveChatResponse(
+                                                    final_response,
+                                                ));
 
-                                            sender_clone
-                                                .input(AppMsg::ReceiveChatResponse(final_response));
-
-                                            // Refrescar sidebar si se modificaron archivos
-                                            if needs_sidebar_refresh {
-                                                println!("🔄 Refrescando sidebar...");
-                                                sender_clone.input(AppMsg::RefreshSidebar);
+                                                // Salir del loop
+                                                break;
                                             }
-                                        } else {
-                                            // No hay tool calls, respuesta normal
+                                        }
+                                        Err(e) => {
                                             sender_clone.input(AppMsg::ReceiveChatResponse(
-                                                ai_response.content.unwrap_or_default(),
+                                                format!("❌ Error: {}", e),
                                             ));
+                                            break;
                                         }
                                     }
-                                    Err(e) => {
-                                        sender_clone.input(AppMsg::ReceiveChatResponse(format!(
-                                            "❌ Error: {}",
-                                            e
-                                        )));
-                                    }
+                                } // Fin del loop
+
+                                // Refrescar sidebar si se modificaron archivos
+                                if needs_sidebar_refresh {
+                                    println!(
+                                        "🔄 Refrescando sidebar después de completar todas las herramientas..."
+                                    );
+                                    sender_clone.input(AppMsg::RefreshSidebar);
                                 }
                             }
                             Err(e) => {
@@ -4534,24 +5059,35 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         .save_chat_message(session_id, "assistant", &response);
                 }
 
-                // Mostrar en UI
-                self.append_chat_message(crate::ai_chat::MessageRole::Assistant, &response);
+                // Mostrar en UI SOLO si NO es un resultado de búsqueda
+                // (los resultados de búsqueda ya se mostraron como widget)
+                if !self.is_search_result(&response) {
+                    self.append_chat_message(crate::ai_chat::MessageRole::Assistant, &response);
+                } else {
+                    println!("🔍 Resultado de búsqueda ya mostrado como widget, no duplicar");
+                }
 
                 sender.input(AppMsg::UpdateChatTokenCount);
             }
 
+            AppMsg::UpdateChatStatus(status_text) => {
+                self.append_chat_typing_indicator(&status_text);
+            }
+
             AppMsg::ShowAttachNoteDialog => {
+                let i18n = self.i18n.borrow();
+
                 // Crear diálogo con lista de notas
                 let dialog = gtk::Dialog::builder()
                     .transient_for(&self.main_window)
                     .modal(true)
-                    .title("Adjuntar nota al contexto")
+                    .title(&i18n.t("chat_attach_note_dialog_title"))
                     .width_request(400)
                     .height_request(500)
                     .build();
 
-                dialog.add_button("Cancelar", gtk::ResponseType::Cancel);
-                dialog.add_button("Adjuntar", gtk::ResponseType::Accept);
+                dialog.add_button(&i18n.t("cancel"), gtk::ResponseType::Cancel);
+                dialog.add_button(&i18n.t("chat_attach_button"), gtk::ResponseType::Accept);
 
                 // Crear lista scrollable
                 let scrolled = gtk::ScrolledWindow::builder()
@@ -4567,20 +5103,23 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 // Agregar todas las notas
                 if let Ok(notes) = self.notes_dir.list_notes() {
                     for note in notes {
+                        let note_name = note.name().to_string();
+
                         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
                         row.set_margin_all(8);
 
                         let icon = gtk::Label::new(Some("📄"));
                         row.append(&icon);
 
-                        let label = gtk::Label::new(Some(note.name()));
+                        let label = gtk::Label::new(Some(&note_name));
                         label.set_xalign(0.0);
                         label.set_hexpand(true);
                         row.append(&label);
 
                         let list_row = gtk::ListBoxRow::new();
                         list_row.set_child(Some(&row));
-                        list_row.set_property("tooltip-text", Some(note.name()));
+                        list_row.set_property("tooltip-text", Some(&note_name));
+
                         list_box.append(&list_row);
                     }
                 }
@@ -4592,17 +5131,19 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 dialog.connect_response(move |dialog, response| {
                     if response == gtk::ResponseType::Accept {
                         if let Some(row) = list_box.selected_row() {
+                            // Extraer el nombre de la nota del Label (segundo hijo del Box)
                             if let Some(child) = row.child() {
                                 if let Ok(box_widget) = child.downcast::<gtk::Box>() {
-                                    // Obtener el segundo hijo (el Label con el nombre)
-                                    let mut iter = box_widget.first_child();
-                                    iter = iter.and_then(|w| w.next_sibling()); // Saltar el icono
-
-                                    if let Some(label_widget) = iter {
-                                        if let Ok(label) = label_widget.downcast::<gtk::Label>() {
-                                            if let Some(note_name) =
-                                                label.text().as_str().to_string().into()
+                                    // Saltar el icono (primer hijo) y obtener el label (segundo hijo)
+                                    if let Some(icon) = box_widget.first_child() {
+                                        if let Some(label_widget) = icon.next_sibling() {
+                                            if let Ok(label) = label_widget.downcast::<gtk::Label>()
                                             {
+                                                let note_name = label.text().to_string();
+                                                println!(
+                                                    "📎 Intentando adjuntar nota: {}",
+                                                    note_name
+                                                );
                                                 sender_clone
                                                     .input(AppMsg::AttachNoteToContext(note_name));
                                             }
@@ -4619,15 +5160,21 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             }
 
             AppMsg::AttachNoteToContext(note_name) => {
+                println!("📎 AttachNoteToContext recibido para: {}", note_name);
+
                 if let Ok(Some(note)) = self.notes_dir.find_note(&note_name) {
                     {
                         if let Some(session) = self.chat_session.borrow_mut().as_mut() {
                             session.attach_note(note);
-                            println!("📎 Nota '{}' adjuntada al contexto", note_name);
+                            println!("✅ Nota '{}' adjuntada al contexto", note_name);
+                        } else {
+                            println!("⚠️ No hay sesión de chat activa");
                         }
                     } // ← Libera borrow_mut aquí
                     self.refresh_context_list();
                     sender.input(AppMsg::UpdateChatTokenCount);
+                } else {
+                    println!("❌ No se pudo encontrar la nota: {}", note_name);
                 }
             }
 
@@ -4654,23 +5201,24 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             }
 
             AppMsg::ClearChatHistory => {
+                let i18n = self.i18n.borrow();
+
                 // Mostrar diálogo de confirmación
                 let dialog = gtk::MessageDialog::builder()
                     .transient_for(&self.main_window)
                     .modal(true)
                     .message_type(gtk::MessageType::Warning)
                     .buttons(gtk::ButtonsType::YesNo)
-                    .text("¿Borrar todo el historial de chat?")
-                    .secondary_text("Esta acción eliminará permanentemente todo el historial de conversaciones guardado. No se puede deshacer.")
+                    .text(&i18n.t("chat_clear_history_confirm_title"))
+                    .secondary_text(&i18n.t("chat_clear_history_confirm_message"))
                     .build();
 
                 let sender_clone = sender.clone();
                 dialog.connect_response(move |dialog, response| {
-                    dialog.close();
-
                     if response == gtk::ResponseType::Yes {
                         sender_clone.input(AppMsg::ConfirmClearChatHistory);
                     }
+                    dialog.close();
                 });
 
                 dialog.present();
@@ -4684,17 +5232,41 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     println!("🗑️ Historial borrado completamente de la base de datos");
                 }
 
-                // Limpiar sesión actual
+                // Limpiar solo los mensajes de la sesión actual, pero mantener el contexto
                 *self.chat_session_id.borrow_mut() = None;
-                *self.chat_session.borrow_mut() = None;
 
-                // Limpiar UI
+                // Si hay sesión activa, limpiar solo el historial pero mantener el contexto
+                if let Some(session) = self.chat_session.borrow_mut().as_mut() {
+                    session.clear_history();
+                    println!("🧹 Historial de mensajes limpiado, contexto mantenido");
+                } else {
+                    // Si no hay sesión, crear una nueva con la configuración actual
+                    let ai_config = self.notes_config.get_ai_config();
+                    let model_config = crate::ai_chat::AIModelConfig {
+                        provider: match ai_config.provider.as_str() {
+                            "anthropic" => crate::ai_chat::AIProvider::Anthropic,
+                            "ollama" => crate::ai_chat::AIProvider::Ollama,
+                            _ => crate::ai_chat::AIProvider::OpenAI,
+                        },
+                        model: ai_config.model.clone(),
+                        max_tokens: ai_config.max_tokens as usize,
+                        temperature: ai_config.temperature,
+                    };
+                    let new_session = crate::ai_chat::ChatSession::new(model_config);
+                    *self.chat_session.borrow_mut() = Some(new_session);
+                    println!("✨ Nueva sesión de chat creada");
+                }
+
+                // Limpiar UI del historial
                 while let Some(child) = self.chat_history_list.first_child() {
                     self.chat_history_list.remove(&child);
                 }
 
+                // Mantener la lista de contexto
                 self.refresh_context_list();
                 sender.input(AppMsg::UpdateChatTokenCount);
+
+                let i18n = self.i18n.borrow();
 
                 // Mostrar confirmación
                 let info_dialog = gtk::MessageDialog::builder()
@@ -4702,9 +5274,13 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     .modal(true)
                     .message_type(gtk::MessageType::Info)
                     .buttons(gtk::ButtonsType::Ok)
-                    .text("Historial borrado")
-                    .secondary_text("El historial de chat ha sido eliminado completamente.")
+                    .text(&i18n.t("chat_history_cleared"))
+                    .secondary_text(&i18n.t("chat_history_cleared_message"))
                     .build();
+
+                info_dialog.connect_response(|dialog, _| {
+                    dialog.close();
+                });
 
                 info_dialog.present();
             }
@@ -4912,8 +5488,22 @@ impl MainApp {
                 if new_mode == EditorMode::ChatAI {
                     sender.input(AppMsg::EnterChatMode);
                 } else {
+                    let old_mode = *self.mode.borrow();
                     *self.mode.borrow_mut() = new_mode;
                     println!("Cambiado a modo: {:?}", new_mode);
+
+                    // Actualizar configuración del TextView según el nuevo modo
+                    match new_mode {
+                        EditorMode::Normal => {
+                            self.text_view.set_editable(false);
+                            self.text_view.set_cursor_visible(false);
+                        }
+                        EditorMode::Insert => {
+                            self.text_view.set_editable(true);
+                            self.text_view.set_cursor_visible(true);
+                        }
+                        _ => {}
+                    }
                 }
             }
             EditorAction::InsertChar(ch) => {
@@ -5214,14 +5804,9 @@ impl MainApp {
     }
 
     fn sync_to_view(&self) {
-        // Activar flag para evitar que connect_changed nos sincronice de vuelta
+        // Activar flag para evitar que los handlers GTK nos sincronicen de vuelta
         *self.is_syncing_to_gtk.borrow_mut() = true;
         println!("sync_to_view activado. Flag is_syncing_to_gtk = true");
-        let sync_flag = self.is_syncing_to_gtk.clone();
-        gtk::glib::idle_add_local_once(move || {
-            println!("sync_to_view completado. Reiniciando flag is_syncing_to_gtk");
-            *sync_flag.borrow_mut() = false;
-        });
 
         let buffer_text = self.buffer.to_string();
         let current_mode = *self.mode.borrow();
@@ -5253,6 +5838,25 @@ impl MainApp {
                 self.cursor_position.min(self.buffer.len_chars())
             };
 
+            println!(
+                "📍 sync_to_view: Modo {:?}, cursor_offset={}, buffer.len={}",
+                current_mode,
+                cursor_offset,
+                self.buffer.len_chars()
+            );
+            println!(
+                "   Texto actual len: {}, texto nuevo len: {}",
+                current_text.chars().count(),
+                display_text.chars().count()
+            );
+
+            // Mostrar contexto alrededor del cursor
+            let chars_vec: Vec<char> = display_text.chars().collect();
+            let start = cursor_offset.saturating_sub(10);
+            let end = (cursor_offset + 10).min(chars_vec.len());
+            let context: String = chars_vec[start..end].iter().collect();
+            println!("   Contexto: {:?} [cursor aquí]", context);
+
             // Bloquear señales GTK durante la actualización
             self.text_buffer.begin_user_action();
 
@@ -5271,6 +5875,15 @@ impl MainApp {
 
             self.text_buffer.end_user_action();
 
+            // Hacer scroll para que el cursor sea visible
+            let text_view = self.text_view.clone();
+            let final_offset = cursor_offset as i32;
+            gtk::glib::idle_add_local_once(move || {
+                let buffer = text_view.buffer();
+                let mut cursor_iter = buffer.iter_at_offset(final_offset);
+                text_view.scroll_to_iter(&mut cursor_iter, 0.0, false, 0.0, 0.0);
+            });
+
             // Aplicar estilos markdown DESPUÉS de terminar la acción de usuario
             // Solo en modo Normal (en Insert mode no aplicamos estilos)
             if current_mode == EditorMode::Normal && self.markdown_enabled {
@@ -5287,7 +5900,20 @@ impl MainApp {
             let mut iter = self.text_buffer.start_iter();
             iter.set_offset(cursor_offset as i32);
             self.text_buffer.place_cursor(&iter);
+
+            // Hacer scroll para que el cursor sea visible
+            let text_view = self.text_view.clone();
+            let final_offset = cursor_offset as i32;
+            gtk::glib::idle_add_local_once(move || {
+                let buffer = text_view.buffer();
+                let mut cursor_iter = buffer.iter_at_offset(final_offset);
+                text_view.scroll_to_iter(&mut cursor_iter, 0.0, false, 0.0, 0.0);
+            });
         }
+
+        // Reiniciar el flag al terminar toda la sincronización
+        *self.is_syncing_to_gtk.borrow_mut() = false;
+        println!("sync_to_view completado. Reiniciando flag is_syncing_to_gtk");
     }
 
     /// Renderiza el texto markdown sin los símbolos de formato
@@ -5334,7 +5960,8 @@ impl MainApp {
                     }
                 }
 
-                // Encabezados: remover # (solo si no estamos en code block)
+                // Encabezados: remover # SOLO si hay espacio después (heading de markdown)
+                // Si no hay espacio, es un tag (#tag) y debe mantenerse
                 '#' if !in_code_block && at_line_start => {
                     // Contar cuántos # hay
                     let mut hash_count = 1;
@@ -5342,11 +5969,20 @@ impl MainApp {
                         chars.next();
                         hash_count += 1;
                     }
-                    // Saltar espacio después de #
+
+                    // IMPORTANTE: Solo es un heading si hay espacio después del #
                     if chars.peek() == Some(&' ') {
-                        chars.next();
+                        // Es un heading: remover los # y el espacio
+                        chars.next(); // Consumir el espacio
+                        at_line_start = false;
+                    } else {
+                        // NO es un heading, es un tag (#tag): mantener el #
+                        // Restaurar los # que consumimos
+                        for _ in 0..hash_count {
+                            result.push('#');
+                        }
+                        at_line_start = false;
                     }
-                    at_line_start = false; // Ya no estamos al inicio de línea
                 }
 
                 // Listas y TODOs: detectar - [ ] o - [x] para TODOs, o - para bullets normales
@@ -5380,10 +6016,6 @@ impl MainApp {
                         && lookahead[4] == ' '
                     {
                         // Es un TODO sin marcar: "- [ ] "
-                        println!(
-                            "DEBUG: TODO sin marcar detectado con {} espacios de indentación",
-                            indent_spaces
-                        );
 
                         // Si tiene indentación (subtarea), agregar indicador visual
                         if indent_spaces > 0 {
@@ -5408,10 +6040,6 @@ impl MainApp {
                         && lookahead[4] == ' '
                     {
                         // Es un TODO marcado: "- [x] " o "- [X] "
-                        println!(
-                            "DEBUG: TODO marcado detectado con {} espacios de indentación",
-                            indent_spaces
-                        );
 
                         // Si tiene indentación (subtarea), agregar indicador visual
                         if indent_spaces > 0 {
@@ -5588,7 +6216,7 @@ impl MainApp {
     fn map_buffer_pos_to_display(&self, original_text: &str, buffer_pos: usize) -> usize {
         let mut display_pos = 0;
         let mut original_pos = 0;
-        let mut byte_pos = 0; // Rastrear posición en bytes para slicing
+        let mut byte_pos = 0;
         let mut at_line_start = true;
         let mut chars = original_text.chars().peekable();
 
@@ -5614,6 +6242,61 @@ impl MainApp {
                         original_pos += 1;
                     }
                     at_line_start = false;
+                }
+                // TODOs: - [ ] o - [x] → se reemplazan por 1 widget (no por texto)
+                '-' if at_line_start => {
+                    let lookahead: Vec<char> = chars.clone().take(6).collect();
+
+                    // TODO sin marcar: "- [ ] "
+                    if lookahead.len() >= 5
+                        && lookahead[0] == ' '
+                        && lookahead[1] == '['
+                        && lookahead[2] == ' '
+                        && lookahead[3] == ']'
+                        && lookahead[4] == ' '
+                    {
+                        // Consumir los 5 caracteres restantes
+                        for _ in 0..5 {
+                            if original_pos < buffer_pos {
+                                chars.next();
+                                original_pos += 1;
+                            }
+                        }
+                        // El widget ocupa 1 posición en display (child anchor)
+                        display_pos += 1;
+                        at_line_start = false;
+                    }
+                    // TODO marcado: "- [x] " o "- [X] "
+                    else if lookahead.len() >= 5
+                        && lookahead[0] == ' '
+                        && lookahead[1] == '['
+                        && (lookahead[2] == 'x' || lookahead[2] == 'X')
+                        && lookahead[3] == ']'
+                        && lookahead[4] == ' '
+                    {
+                        // Consumir los 5 caracteres restantes
+                        for _ in 0..5 {
+                            if original_pos < buffer_pos {
+                                chars.next();
+                                original_pos += 1;
+                            }
+                        }
+                        // El widget ocupa 1 posición en display (child anchor)
+                        display_pos += 1;
+                        at_line_start = false;
+                    }
+                    // Lista normal: "- "
+                    else if lookahead.len() >= 1 && lookahead[0] == ' ' {
+                        chars.next();
+                        original_pos += 1;
+                        byte_pos += char_len + ' '.len_utf8();
+                        display_pos += 2; // "• "
+                        at_line_start = false;
+                    } else {
+                        byte_pos += char_len;
+                        display_pos += 1;
+                        at_line_start = false;
+                    }
                 }
                 // Negrita: saltar **
                 '*' if chars.peek() == Some(&'*') => {
@@ -5643,7 +6326,31 @@ impl MainApp {
             }
         }
 
-        display_pos.min(self.render_clean_markdown(original_text).chars().count())
+        display_pos
+    }
+
+    /// Genera un ID de anchor para un heading al estilo markdown
+    /// Convierte "Conexión al MCP Server" → "conexión-al-mcp-server"
+    fn generate_heading_id(text: &str) -> String {
+        text.to_lowercase()
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c
+                } else if c.is_whitespace() || c == '-' {
+                    '-'
+                } else {
+                    // Eliminar caracteres especiales
+                    '\0'
+                }
+            })
+            .filter(|&c| c != '\0')
+            .collect::<String>()
+            // Eliminar guiones duplicados
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
     }
 
     /// Aplica estilos markdown al texto limpio (sin símbolos)
@@ -5665,6 +6372,9 @@ impl MainApp {
         self.image_widgets.borrow_mut().clear();
         self.video_widgets.borrow_mut().clear();
         self.todo_widgets.borrow_mut().clear();
+
+        // Limpiar y recolectar headings para anchor links
+        self.heading_anchors.borrow_mut().clear();
 
         // Obtener texto original para detectar markdown
         let original_text = self.buffer.to_string();
@@ -5714,10 +6424,34 @@ impl MainApp {
             let tag_name = if in_code_block {
                 Some("codeblock")
             } else if original_line.starts_with("### ") {
+                // Recolectar heading nivel 3
+                let heading_text = original_line[4..].trim();
+                let heading_id = Self::generate_heading_id(heading_text);
+                self.heading_anchors.borrow_mut().push(HeadingAnchor {
+                    id: heading_id,
+                    line_offset: line_start.offset(),
+                    text: heading_text.to_string(),
+                });
                 Some("h3")
             } else if original_line.starts_with("## ") {
+                // Recolectar heading nivel 2
+                let heading_text = original_line[3..].trim();
+                let heading_id = Self::generate_heading_id(heading_text);
+                self.heading_anchors.borrow_mut().push(HeadingAnchor {
+                    id: heading_id,
+                    line_offset: line_start.offset(),
+                    text: heading_text.to_string(),
+                });
                 Some("h2")
             } else if original_line.starts_with("# ") {
+                // Recolectar heading nivel 1
+                let heading_text = original_line[2..].trim();
+                let heading_id = Self::generate_heading_id(heading_text);
+                self.heading_anchors.borrow_mut().push(HeadingAnchor {
+                    id: heading_id,
+                    line_offset: line_start.offset(),
+                    text: heading_text.to_string(),
+                });
                 Some("h1")
             } else if original_line.starts_with("> ") {
                 Some("blockquote")
@@ -5809,7 +6543,6 @@ impl MainApp {
             let mut marker_end = self.text_buffer.start_iter();
             marker_end.set_offset(end as i32);
             let marker_text = self.text_buffer.text(&marker_start, &marker_end, false);
-            println!("DEBUG todos: marker_text='{}'", marker_text);
 
             // Eliminar el marcador del buffer
             self.text_buffer
@@ -6124,24 +6857,12 @@ impl MainApp {
         let start = self.text_buffer.start_iter();
         let end = self.text_buffer.end_iter();
         let buffer_text = self.text_buffer.text(&start, &end, false).to_string();
-        println!(
-            "DEBUG todos: buffer_text first lines: {:?}",
-            buffer_text.lines().take(5).collect::<Vec<_>>()
-        );
 
         // Obtener el texto original del buffer interno para encontrar las posiciones de TODOs
         let original_text = self.buffer.to_string();
-        println!(
-            "DEBUG todos: original_text first lines: {:?}",
-            original_text.lines().take(5).collect::<Vec<_>>()
-        );
 
         // Encontrar todas las posiciones de TODOs en el texto ORIGINAL (no renderizado)
         let original_todo_positions = find_all_todos_in_text(&original_text);
-        println!(
-            "DEBUG todos: {} posiciones originales",
-            original_todo_positions.len()
-        );
 
         // Buscar todos los marcadores TODO en el buffer renderizado
         let mut todos = Vec::new();
@@ -6181,7 +6902,6 @@ impl MainApp {
 
         // Ordenar por posición (de mayor a menor para procesarlos en orden inverso)
         todos.sort_by(|a, b| b.0.cmp(&a.0));
-        println!("DEBUG todos: {} marcadores en display", todos.len());
 
         // Asociar cada marcador con su posición original usando índice
         let mut todo_index = original_todo_positions.len();
@@ -6199,10 +6919,6 @@ impl MainApp {
             // Eliminar el marcador del buffer
             self.text_buffer
                 .delete(&mut marker_start.clone(), &mut marker_end.clone());
-            println!(
-                "DEBUG todos: eliminado marcador en {}..{} checked={} (todo_index={})",
-                start, end, is_checked, todo_index
-            );
 
             // Recrear el iterador de inicio después del delete
             let mut anchor_pos = self.text_buffer.start_iter();
@@ -6247,14 +6963,6 @@ impl MainApp {
             // Guardar referencia al widget
             self.todo_widgets.borrow_mut().push(checkbox);
         }
-
-        let start = self.text_buffer.start_iter();
-        let end = self.text_buffer.end_iter();
-        let remaining = self.text_buffer.text(&start, &end, false);
-        println!(
-            "DEBUG todos: texto tras procesar -> {:?}",
-            remaining.lines().take(5).collect::<Vec<_>>()
-        );
     }
 
     /// Aplica estilos inline dentro de una línea (negrita, cursiva, código, links, tags)
@@ -6265,8 +6973,8 @@ impl MainApp {
         line_start: &gtk::TextIter,
         line_offset: i32,
     ) {
-        // Primero detectar tags inline en el texto limpio
-        self.detect_inline_tags(clean_line, line_offset);
+        // IMPORTANTE: Detectar tags inline mapeando de línea original a limpia
+        self.detect_inline_tags_with_mapping(clean_line, original_line, line_offset);
 
         let mut clean_pos = 0;
         let mut orig_pos = 0;
@@ -6391,6 +7099,78 @@ impl MainApp {
         }
     }
 
+    /// Detecta tags inline (#tag) mapeando posiciones de línea original a línea limpia
+    fn detect_inline_tags_with_mapping(
+        &self,
+        clean_line: &str,
+        original_line: &str,
+        line_offset: i32,
+    ) {
+        let orig_chars: Vec<char> = original_line.chars().collect();
+        let clean_chars: Vec<char> = clean_line.chars().collect();
+
+        let mut orig_pos = 0;
+        let mut clean_pos = 0;
+
+        while orig_pos < orig_chars.len() {
+            // Buscar # que esté al inicio o después de espacio/puntuación
+            if orig_chars[orig_pos] == '#' {
+                let is_tag_start = orig_pos == 0 || {
+                    let prev = orig_chars[orig_pos - 1];
+                    prev.is_whitespace() || prev == '(' || prev == '[' || prev == ','
+                };
+
+                if is_tag_start {
+                    let tag_start_orig = orig_pos;
+                    let tag_start_clean = clean_pos; // Posición en texto limpio
+                    orig_pos += 1;
+
+                    // IMPORTANTE: Si después del # viene un espacio, es un heading, no un tag
+                    if orig_pos < orig_chars.len() && orig_chars[orig_pos].is_whitespace() {
+                        orig_pos += 1;
+                        continue; // Saltar, no es un tag
+                    }
+
+                    // Extraer el nombre del tag (letras, números, guiones)
+                    let mut tag_name = String::new();
+                    let mut tag_chars_count = 0;
+                    while orig_pos < orig_chars.len() {
+                        let ch = orig_chars[orig_pos];
+                        if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+                            tag_name.push(ch);
+                            tag_chars_count += 1;
+                            orig_pos += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Si encontramos un tag válido, guardarlo con posiciones del texto limpio
+                    if !tag_name.is_empty() {
+                        // En el texto limpio, el # se mantiene, así que las posiciones son:
+                        // start: donde está el # en clean_line
+                        // end: start + 1 (el #) + longitud del tag
+                        let start_offset = line_offset + tag_start_clean as i32;
+                        let end_offset = line_offset + tag_start_clean as i32 + 1 + tag_chars_count;
+
+                        self.tag_spans.borrow_mut().push(TagSpan {
+                            start: start_offset,
+                            end: end_offset,
+                            tag: tag_name,
+                        });
+                    }
+                    continue;
+                }
+            }
+
+            // Sincronizar posiciones: si el carácter actual aparece en clean_line
+            if clean_pos < clean_chars.len() && orig_chars[orig_pos] == clean_chars[clean_pos] {
+                clean_pos += 1;
+            }
+            orig_pos += 1;
+        }
+    }
+
     /// Detecta tags inline (#tag) en el texto y los almacena
     fn detect_inline_tags(&self, line: &str, line_offset: i32) {
         let chars: Vec<char> = line.chars().collect();
@@ -6407,6 +7187,12 @@ impl MainApp {
                 if is_tag_start {
                     let tag_start = pos;
                     pos += 1;
+
+                    // IMPORTANTE: Si después del # viene un espacio, es un heading, no un tag
+                    if pos < chars.len() && chars[pos].is_whitespace() {
+                        pos += 1;
+                        continue; // Saltar, no es un tag
+                    }
 
                     // Extraer el nombre del tag (letras, números, guiones)
                     let mut tag_name = String::new();
@@ -6435,6 +7221,43 @@ impl MainApp {
                 }
             }
             pos += 1;
+        }
+
+        // Detectar también tags en formato YAML de lista (frontmatter con • o -)
+        // Buscar líneas como:
+        //   • tag
+        //   - tag
+        // Que son típicas del formato visual del frontmatter parseado
+        let trimmed_line = line.trim_start();
+
+        // Detectar "• tag" o "- tag" (lista de tags en frontmatter)
+        if trimmed_line.starts_with("• ") || trimmed_line.starts_with("- ") {
+            let tag_text = if trimmed_line.starts_with("• ") {
+                trimmed_line[3..].trim() // Después de "• " (bullet es 3 bytes UTF-8)
+            } else {
+                trimmed_line[2..].trim() // Después de "- "
+            };
+
+            // Verificar que sea solo una palabra (tag válido, sin espacios)
+            if !tag_text.is_empty() && !tag_text.contains(char::is_whitespace) {
+                // Calcular offset del tag dentro de la línea
+                let bullet_pos = line.find(trimmed_line).unwrap_or(0);
+                let tag_start_in_line = if trimmed_line.starts_with("• ") {
+                    bullet_pos + 3 // Después de "• " (3 bytes UTF-8)
+                } else {
+                    bullet_pos + 2 // Después de "- "
+                };
+                let tag_end_in_line = tag_start_in_line + tag_text.len();
+
+                let start_offset = line_offset + tag_start_in_line as i32;
+                let end_offset = line_offset + tag_end_in_line as i32;
+
+                self.tag_spans.borrow_mut().push(TagSpan {
+                    start: start_offset,
+                    end: end_offset,
+                    tag: tag_text.to_string(),
+                });
+            }
         }
     }
 
@@ -6899,20 +7722,11 @@ impl MainApp {
 
         // Mostrar primero las tareas pendientes
         for (index, todo) in pending_todos.iter().enumerate() {
-            println!(
-                "DEBUG: TODO pendiente #{}: '{}' nivel {} completado {}",
-                index, todo.text, todo.indent_level, todo.completed
-            );
-
             // Box horizontal que contendrá la línea de conexión y el contenido del TODO
             let todo_wrapper = gtk::Box::new(gtk::Orientation::Horizontal, 0);
 
             // Si es una subtarea, agregar línea de conexión visual
             if todo.indent_level > 0 {
-                println!(
-                    "DEBUG: Agregando línea de árbol para subtarea nivel {}",
-                    todo.indent_level
-                );
                 // Crear box para las líneas de conexión
                 let line_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 let base_indent = 4; // Margen base
@@ -7113,10 +7927,6 @@ impl MainApp {
             let trimmed = line.trim_start();
             if trimmed.starts_with("- [ ]") {
                 let text = trimmed[5..].trim().to_string();
-                println!(
-                    "DEBUG TODO: '{}' con {} espacios, nivel {}",
-                    text, leading_spaces, indent_level
-                );
                 current_todos.push(TodoItem {
                     completed: false,
                     indent_level,
@@ -7124,10 +7934,6 @@ impl MainApp {
                 });
             } else if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
                 let text = trimmed[5..].trim().to_string();
-                println!(
-                    "DEBUG TODO completado: '{}' con {} espacios, nivel {}",
-                    text, leading_spaces, indent_level
-                );
                 current_todos.push(TodoItem {
                     completed: true,
                     indent_level,
@@ -7559,6 +8365,26 @@ impl MainApp {
 
     /// Crea una nueva nota
     fn create_new_note(&mut self, name: &str) -> anyhow::Result<()> {
+        // Detectar si solo quiere crear una carpeta (termina en /)
+        if name.ends_with('/') {
+            let folder_name = name.trim_matches('/'); // Quitar / del inicio Y del final
+            if folder_name.is_empty() {
+                anyhow::bail!("El nombre de la carpeta no puede estar vacío");
+            }
+
+            // Crear la carpeta directamente
+            let folder_path = self.notes_dir.root().join(folder_name);
+            std::fs::create_dir_all(&folder_path)?;
+
+            println!("✅ Carpeta creada: {}", folder_name);
+
+            // Expandir la carpeta automáticamente
+            self.expanded_folders.insert(folder_name.to_string());
+
+            // No crear nota, solo retornar
+            return Ok(());
+        }
+
         // Contenido inicial vacío para nueva nota
         let initial_content = format!("# {}\n\n", name.split('/').last().unwrap_or(name));
 
@@ -7760,17 +8586,43 @@ impl MainApp {
                     .push(note_meta.name);
             }
 
+            // Escanear el filesystem RECURSIVAMENTE para incluir carpetas vacías
+            fn scan_folders_recursive(
+                path: &std::path::Path,
+                root: &std::path::Path,
+                folders_set: &mut HashMap<String, Vec<String>>,
+            ) {
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        if let Ok(metadata) = entry.metadata() {
+                            if metadata.is_dir() {
+                                // Obtener el path relativo desde el root
+                                if let Ok(relative) = entry.path().strip_prefix(root) {
+                                    if let Some(folder_name) = relative.to_str() {
+                                        // Asegurar que la carpeta esté en el HashMap
+                                        folders_set
+                                            .entry(folder_name.to_string())
+                                            .or_insert_with(Vec::new);
+
+                                        // Escanear recursivamente dentro de esta carpeta
+                                        scan_folders_recursive(&entry.path(), root, folders_set);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let notes_root = self.notes_dir.root().to_path_buf();
+            scan_folders_recursive(&notes_root, &notes_root, &mut by_folder);
+
             // Ordenar solo las carpetas, no las notas (las notas ya vienen ordenadas por order_index)
             let mut folders: Vec<_> = by_folder.keys().cloned().collect();
             folders.sort();
 
             for folder in folders {
                 if let Some(notes_in_folder) = by_folder.get(&folder) {
-                    // Saltar carpetas vacías
-                    if notes_in_folder.is_empty() {
-                        continue;
-                    }
-
                     // Si no es la raíz, mostrar carpeta como encabezado expandible
                     if folder != "/" {
                         // Verificar que la carpeta existe en el filesystem
@@ -7806,7 +8658,8 @@ impl MainApp {
                             .build();
 
                         // Obtener solo el nombre de la carpeta (última parte del path)
-                        let folder_display_name = folder.split('/').last().unwrap_or(&folder);
+                        let folder_display_name =
+                            folder.split('/').last().unwrap_or(&folder).to_string();
 
                         // Calcular nivel de indentación (número de '/' en el path)
                         let depth = folder.matches('/').count();
@@ -7814,19 +8667,113 @@ impl MainApp {
 
                         folder_row.set_margin_start(indent as i32);
 
-                        let folder_label = gtk::Label::builder()
-                            .label(folder_display_name)
-                            .xalign(0.0)
-                            .hexpand(true)
-                            .ellipsize(gtk::pango::EllipsizeMode::End)
-                            .max_width_chars(30)
-                            .build();
-
-                        folder_label.add_css_class("heading");
-
                         folder_row.append(&arrow);
                         folder_row.append(&folder_icon);
-                        folder_row.append(&folder_label);
+
+                        // Verificar si esta carpeta está siendo renombrada
+                        let is_renaming_folder = self
+                            .renaming_item
+                            .borrow()
+                            .as_ref()
+                            .map(|(name, is_folder)| *is_folder && name == &folder)
+                            .unwrap_or(false);
+
+                        if is_renaming_folder {
+                            // Mostrar Entry editable para carpeta
+                            let entry = gtk::Entry::builder()
+                                .text(&folder_display_name)
+                                .hexpand(true)
+                                .build();
+
+                            let old_folder_name = folder.clone();
+                            let folder_display_clone = folder_display_name.clone();
+                            let renaming_clone = self.renaming_item.clone();
+                            let notes_dir = self.notes_dir.clone();
+                            let notes_db_clone = self.notes_db.clone_connection();
+                            let sender_clone = sender.clone();
+
+                            entry.connect_activate(move |entry| {
+                                let new_name = entry.text().to_string().trim().to_string();
+                                if !new_name.is_empty() && new_name != folder_display_clone {
+                                    let old_path = notes_dir.root().join(&old_folder_name);
+                                    let new_path = notes_dir.root().join(&new_name);
+
+                                    if let Err(e) = std::fs::rename(&old_path, &new_path) {
+                                        eprintln!("Error al renombrar carpeta: {}", e);
+                                    } else {
+                                        // Actualizar todas las notas de la carpeta en la BD
+                                        if let Ok(entries) = std::fs::read_dir(&new_path) {
+                                            for entry in entries.flatten() {
+                                                if let Ok(metadata) = entry.metadata() {
+                                                    if metadata.is_file()
+                                                        && entry
+                                                            .path()
+                                                            .extension()
+                                                            .map_or(false, |e| e == "md")
+                                                    {
+                                                        if let (Ok(content), Some(name)) = (
+                                                            std::fs::read_to_string(entry.path()),
+                                                            entry
+                                                                .path()
+                                                                .file_stem()
+                                                                .and_then(|s| s.to_str()),
+                                                        ) {
+                                                            let _ = notes_db_clone.index_note(
+                                                                name,
+                                                                entry.path().to_str().unwrap_or(""),
+                                                                &content,
+                                                                Some(&new_name),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                *renaming_clone.borrow_mut() = None;
+                                sender_clone.input(AppMsg::RefreshSidebar);
+                            });
+
+                            // Al perder foco, cancelar renombrado
+                            let focus_controller = gtk::EventControllerFocus::new();
+                            let renaming_clone2 = self.renaming_item.clone();
+                            let sender_clone2 = sender.clone();
+                            focus_controller.connect_leave(move |_| {
+                                *renaming_clone2.borrow_mut() = None;
+                                sender_clone2.input(AppMsg::RefreshSidebar);
+                            });
+                            entry.add_controller(focus_controller);
+
+                            folder_row.append(&entry);
+
+                            // Dar foco al entry
+                            gtk::glib::source::timeout_add_local(
+                                std::time::Duration::from_millis(50),
+                                gtk::glib::clone!(
+                                    #[strong]
+                                    entry,
+                                    move || {
+                                        entry.grab_focus();
+                                        entry.select_region(0, -1);
+                                        gtk::glib::ControlFlow::Break
+                                    }
+                                ),
+                            );
+                        } else {
+                            // Mostrar Label normal para carpeta
+                            let folder_label = gtk::Label::builder()
+                                .label(folder_display_name)
+                                .xalign(0.0)
+                                .hexpand(true)
+                                .ellipsize(gtk::pango::EllipsizeMode::End)
+                                .max_width_chars(30)
+                                .build();
+
+                            folder_label.add_css_class("heading");
+                            folder_row.append(&folder_label);
+                        }
 
                         // Agregar como row seleccionable y activatable
                         let list_row = gtk::ListBoxRow::builder()
@@ -7908,6 +8855,7 @@ impl MainApp {
                             let notes_dir = self.notes_dir.clone();
                             let sender_clone = sender.clone();
 
+                            let notes_db_clone = self.notes_db.clone_connection();
                             entry.connect_activate(move |entry| {
                                 let new_name = entry.text().to_string().trim().to_string();
                                 if !new_name.is_empty() && new_name != old_name {
@@ -7925,8 +8873,26 @@ impl MainApp {
                                                 .join(format!("{}.md", new_name))
                                         };
 
-                                        if let Err(e) = std::fs::rename(old_path, &new_path) {
+                                        if let Err(e) = std::fs::rename(&old_path, &new_path) {
                                             eprintln!("Error al renombrar: {}", e);
+                                        } else {
+                                            // Actualizar en la base de datos
+                                            if let Ok(content) = std::fs::read_to_string(&new_path) {
+                                                let folder = old_path
+                                                    .parent()
+                                                    .and_then(|p| p.file_name())
+                                                    .and_then(|f| f.to_str())
+                                                    .filter(|f| *f != "notes");
+
+                                                if let Err(e) = notes_db_clone.index_note(
+                                                    &new_name,
+                                                    new_path.to_str().unwrap_or(""),
+                                                    &content,
+                                                    folder,
+                                                ) {
+                                                    eprintln!("⚠️ Error actualizando BD después de renombrar: {}", e);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -8219,18 +9185,35 @@ impl MainApp {
 
         completion_popover.set_child(Some(&scrolled));
 
-        // Obtener carpetas existentes escaneando el directorio
+        // Obtener carpetas existentes escaneando el directorio RECURSIVAMENTE
         let mut folders: Vec<String> = Vec::new();
-        if let Ok(notes) = self.notes_dir.list_notes() {
-            for note in notes {
-                let note_path = note.path();
-                if let Some(folder) = self.notes_dir.relative_folder(note_path) {
-                    if !folders.contains(&folder) {
-                        folders.push(folder);
+
+        fn scan_all_folders(
+            path: &std::path::Path,
+            root: &std::path::Path,
+            folders_list: &mut Vec<String>,
+        ) {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_dir() {
+                            if let Ok(relative) = entry.path().strip_prefix(root) {
+                                if let Some(folder_name) = relative.to_str() {
+                                    if !folders_list.contains(&folder_name.to_string()) {
+                                        folders_list.push(folder_name.to_string());
+                                    }
+                                    // Escanear recursivamente
+                                    scan_all_folders(&entry.path(), root, folders_list);
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+
+        let notes_root = self.notes_dir.root();
+        scan_all_folders(notes_root, notes_root, &mut folders);
         folders.sort();
 
         let hint_label = gtk::Label::builder()
@@ -9574,18 +10557,33 @@ impl MainApp {
             models_listbox.select_row(Some(&row));
         }
 
-        // Conectar selección de modelo
+        // Conectar selección de modelo - extraer ID directamente del label
         let sender_clone = sender.clone();
-        let all_models_clone = all_models.clone();
         models_listbox.connect_row_selected(move |_, row| {
             if let Some(row) = row {
-                let index = row.index() as usize;
-                let models = all_models_clone.borrow();
-                if let Some(model_id) = models.get(index) {
-                    if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
-                        config.set_ai_model(model_id.clone());
-                        let _ = config.save(NotesConfig::default_path());
-                        sender_clone.input(AppMsg::ReloadConfig);
+                // Verificar que no sea un separador
+                if !row.is_selectable() {
+                    return;
+                }
+
+                // Extraer el ID del modelo del label
+                if let Some(child) = row.child() {
+                    if let Ok(box_row) = child.downcast::<gtk::Box>() {
+                        if let Some(label_widget) = box_row.first_child() {
+                            if let Ok(id_label) = label_widget.downcast::<gtk::Label>() {
+                                let model_id = id_label.text().to_string();
+
+                                // Guardar configuración
+                                if let Ok(mut config) =
+                                    NotesConfig::load(NotesConfig::default_path())
+                                {
+                                    println!("💾 Guardando modelo seleccionado: {}", model_id);
+                                    config.set_ai_model(model_id.clone());
+                                    let _ = config.save(NotesConfig::default_path());
+                                    sender_clone.input(AppMsg::ReloadConfig);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -9596,6 +10594,7 @@ impl MainApp {
         let all_models_search = all_models.clone();
         let full_models = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let full_models_clone = full_models.clone();
+        let i18n_search = self.i18n.clone();
 
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
@@ -9644,13 +10643,14 @@ impl MainApp {
                     let separator = gtk::ListBoxRow::new();
                     separator.set_selectable(false);
                     separator.set_activatable(false);
-                    let sep_label = gtk::Label::new(Some("═══ GRATUITOS ═══"));
+                    let sep_label =
+                        gtk::Label::new(Some(&i18n_search.borrow().t("ai_free_models")));
                     sep_label.add_css_class("heading");
                     sep_label.set_margin_all(8);
                     separator.set_child(Some(&sep_label));
                     listbox_clone.append(&separator);
 
-                    for model in free_filtered.iter().take(50) {
+                    for model in free_filtered.iter() {
                         let row = gtk::ListBoxRow::new();
                         let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
                         box_row.set_margin_all(8);
@@ -9676,18 +10676,19 @@ impl MainApp {
                     }
                 }
 
-                // Mostrar de pago después
+                // Mostrar de pago después (sin límite)
                 if !paid_filtered.is_empty() {
                     let separator = gtk::ListBoxRow::new();
                     separator.set_selectable(false);
                     separator.set_activatable(false);
-                    let sep_label = gtk::Label::new(Some("═══ DE PAGO ═══"));
+                    let sep_label =
+                        gtk::Label::new(Some(&i18n_search.borrow().t("ai_paid_models")));
                     sep_label.add_css_class("heading");
                     sep_label.set_margin_all(8);
                     separator.set_child(Some(&sep_label));
                     listbox_clone.append(&separator);
 
-                    for model in paid_filtered.iter().take(100) {
+                    for model in paid_filtered.iter() {
                         let row = gtk::ListBoxRow::new();
                         let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
                         box_row.set_margin_all(8);
@@ -9733,6 +10734,7 @@ impl MainApp {
         let all_models_refresh = all_models.clone();
         let full_models_refresh = full_models.clone();
         let search_clone = search_entry.clone();
+        let i18n_refresh = self.i18n.clone();
 
         refresh_models_btn.connect_clicked(move |btn| {
             btn.set_sensitive(false);
@@ -9744,6 +10746,7 @@ impl MainApp {
             let all_models_ref = all_models_refresh.clone();
             let full_models_ref = full_models_refresh.clone();
             let search_ref = search_clone.clone();
+            let i18n = i18n_refresh.clone();
 
             gtk::glib::spawn_future_local(async move {
                 match crate::ai_chat::fetch_openrouter_models().await {
@@ -9780,13 +10783,14 @@ impl MainApp {
                             let separator = gtk::ListBoxRow::new();
                             separator.set_selectable(false);
                             separator.set_activatable(false);
-                            let sep_label = gtk::Label::new(Some("═══ MODELOS GRATUITOS ═══"));
+                            let sep_label =
+                                gtk::Label::new(Some(&i18n.borrow().t("ai_free_models")));
                             sep_label.add_css_class("heading");
                             sep_label.set_margin_all(8);
                             separator.set_child(Some(&sep_label));
                             listbox.append(&separator);
 
-                            for model in free_models.iter().take(50) {
+                            for model in free_models.iter() {
                                 let row = gtk::ListBoxRow::new();
                                 let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
                                 box_row.set_margin_all(8);
@@ -9814,18 +10818,19 @@ impl MainApp {
                             }
                         }
 
-                        // Agregar sección de modelos de pago
+                        // Agregar sección de modelos de pago (sin límite)
                         if !paid_models.is_empty() {
                             let separator = gtk::ListBoxRow::new();
                             separator.set_selectable(false);
                             separator.set_activatable(false);
-                            let sep_label = gtk::Label::new(Some("═══ MODELOS DE PAGO ═══"));
+                            let sep_label =
+                                gtk::Label::new(Some(&i18n.borrow().t("ai_paid_models")));
                             sep_label.add_css_class("heading");
                             sep_label.set_margin_all(8);
                             separator.set_child(Some(&sep_label));
                             listbox.append(&separator);
 
-                            for model in paid_models.iter().take(100) {
+                            for model in paid_models.iter() {
                                 let row = gtk::ListBoxRow::new();
                                 let box_row = gtk::Box::new(gtk::Orientation::Vertical, 4);
                                 box_row.set_margin_all(8);
@@ -9870,6 +10875,9 @@ impl MainApp {
             });
         });
 
+        // Cargar modelos automáticamente al abrir el diálogo
+        refresh_models_btn.emit_clicked();
+
         model_box.append(&models_scroll);
         ai_box.append(&model_box);
 
@@ -9905,8 +10913,13 @@ impl MainApp {
         temp_box.append(&temp_scale);
         ai_box.append(&temp_box);
 
-        // Max tokens slider
+        // Max tokens slider with unlimited option
         let tokens_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+
+        let tokens_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .build();
@@ -9917,25 +10930,76 @@ impl MainApp {
             .width_chars(12)
             .build();
 
+        let unlimited_check = gtk::CheckButton::builder().label("Unlimited").build();
+
+        tokens_header.append(&tokens_label);
+        tokens_header.append(&unlimited_check);
+
+        let tokens_slider_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
         let tokens_scale =
-            gtk::Scale::with_range(gtk::Orientation::Horizontal, 100.0, 4000.0, 100.0);
+            gtk::Scale::with_range(gtk::Orientation::Horizontal, 100.0, 128000.0, 100.0);
         tokens_scale.set_hexpand(true);
-        tokens_scale.set_value(self.notes_config.get_ai_config().max_tokens as f64);
+
+        let current_tokens = self.notes_config.get_ai_config().max_tokens;
+        let is_unlimited = current_tokens >= 1_000_000;
+
+        if is_unlimited {
+            unlimited_check.set_active(true);
+            tokens_scale.set_sensitive(false);
+            tokens_scale.set_value(128000.0);
+        } else {
+            tokens_scale.set_value(current_tokens as f64);
+        }
+
         tokens_scale.set_draw_value(true);
         tokens_scale.set_value_pos(gtk::PositionType::Right);
 
+        // Conectar checkbox unlimited
         let sender_clone = sender.clone();
-        tokens_scale.connect_value_changed(move |scale| {
-            let tokens = scale.value() as u32;
+        let scale_clone = tokens_scale.clone();
+        unlimited_check.connect_toggled(move |check| {
+            let is_unlimited = check.is_active();
+            scale_clone.set_sensitive(!is_unlimited);
+
             if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
-                config.set_ai_max_tokens(tokens);
+                if is_unlimited {
+                    config.set_ai_max_tokens(1_000_000); // Valor muy alto para "unlimited"
+                } else {
+                    // Al desmarcar, establecer un valor razonable por defecto
+                    let tokens = if scale_clone.value() > 128000.0 {
+                        4000 // Valor por defecto seguro
+                    } else {
+                        scale_clone.value() as u32
+                    };
+                    scale_clone.set_value(tokens as f64);
+                    config.set_ai_max_tokens(tokens);
+                }
                 let _ = config.save(NotesConfig::default_path());
                 sender_clone.input(AppMsg::ReloadConfig);
             }
         });
 
-        tokens_box.append(&tokens_label);
-        tokens_box.append(&tokens_scale);
+        // Conectar slider
+        let sender_clone = sender.clone();
+        let unlimited_clone = unlimited_check.clone();
+        tokens_scale.connect_value_changed(move |scale| {
+            if !unlimited_clone.is_active() {
+                let tokens = scale.value() as u32;
+                if let Ok(mut config) = NotesConfig::load(NotesConfig::default_path()) {
+                    config.set_ai_max_tokens(tokens);
+                    let _ = config.save(NotesConfig::default_path());
+                    sender_clone.input(AppMsg::ReloadConfig);
+                }
+            }
+        });
+
+        tokens_slider_box.append(&tokens_scale);
+        tokens_box.append(&tokens_header);
+        tokens_box.append(&tokens_slider_box);
         ai_box.append(&tokens_box);
 
         // Save history toggle
@@ -10315,7 +11379,7 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .program_name("NotNative")
-            .version("0.1.3")
+            .version("0.1.6")
             .comments(&i18n.t("app_description"))
             .website("https://github.com/k4ditano/notnative-app")
             .website_label(&i18n.t("website"))
@@ -10323,6 +11387,238 @@ impl MainApp {
             .authors(vec!["k4ditano".to_string()])
             .build();
 
+        dialog.present();
+    }
+
+    fn show_mcp_server_info_dialog(&self) {
+        let i18n = self.i18n.borrow();
+
+        // Crear ventana de diálogo
+        let dialog = gtk::Window::builder()
+            .transient_for(&self.main_window)
+            .modal(true)
+            .title("MCP Server - Model Context Protocol")
+            .default_width(500)
+            .default_height(300)
+            .build();
+
+        // Contenedor principal
+        let main_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .margin_top(20)
+            .margin_bottom(20)
+            .margin_start(20)
+            .margin_end(20)
+            .build();
+
+        // Header con icono y título
+        let header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+
+        let icon_label = gtk::Label::builder().label("🚀").build();
+        icon_label.add_css_class("title-1");
+
+        let title_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .build();
+
+        let title_label = gtk::Label::builder()
+            .label("<b>MCP Server Activo</b>")
+            .use_markup(true)
+            .xalign(0.0)
+            .build();
+        title_label.add_css_class("title-2");
+
+        let subtitle_label = gtk::Label::builder()
+            .label("Exponiendo herramientas de NotNative via HTTP")
+            .xalign(0.0)
+            .build();
+        subtitle_label.add_css_class("dim-label");
+
+        title_box.append(&title_label);
+        title_box.append(&subtitle_label);
+
+        header_box.append(&icon_label);
+        header_box.append(&title_box);
+
+        // Información del servidor
+        let info_frame = gtk::Frame::builder().build();
+
+        let info_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_top(16)
+            .margin_bottom(16)
+            .margin_start(16)
+            .margin_end(16)
+            .build();
+
+        // Estado
+        let status_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let status_label_key = gtk::Label::builder()
+            .label("<b>Estado:</b>")
+            .use_markup(true)
+            .xalign(0.0)
+            .width_chars(15)
+            .build();
+
+        let status_indicator = gtk::Label::builder().label("🟢 Activo").xalign(0.0).build();
+
+        status_row.append(&status_label_key);
+        status_row.append(&status_indicator);
+
+        // URL
+        let url_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let url_label_key = gtk::Label::builder()
+            .label("<b>URL:</b>")
+            .use_markup(true)
+            .xalign(0.0)
+            .width_chars(15)
+            .build();
+
+        let url_value = gtk::Label::builder()
+            .label("http://localhost:8788")
+            .xalign(0.0)
+            .selectable(true)
+            .build();
+
+        url_row.append(&url_label_key);
+        url_row.append(&url_value);
+
+        // Endpoints
+        let endpoints_label = gtk::Label::builder()
+            .label("<b>Endpoints disponibles:</b>")
+            .use_markup(true)
+            .xalign(0.0)
+            .margin_top(8)
+            .build();
+
+        let endpoints_list_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(16)
+            .build();
+
+        let endpoint1 = gtk::Label::builder()
+            .label("• GET  /health")
+            .xalign(0.0)
+            .build();
+        endpoint1.add_css_class("monospace");
+
+        let endpoint2 = gtk::Label::builder()
+            .label("• POST /mcp/list_tools")
+            .xalign(0.0)
+            .build();
+        endpoint2.add_css_class("monospace");
+
+        let endpoint3 = gtk::Label::builder()
+            .label("• POST /mcp/call_tool")
+            .xalign(0.0)
+            .build();
+        endpoint3.add_css_class("monospace");
+
+        endpoints_list_box.append(&endpoint1);
+        endpoints_list_box.append(&endpoint2);
+        endpoints_list_box.append(&endpoint3);
+
+        info_box.append(&status_row);
+        info_box.append(&url_row);
+        info_box.append(&endpoints_label);
+        info_box.append(&endpoints_list_box);
+
+        info_frame.set_child(Some(&info_box));
+
+        // Botones de acción
+        let buttons_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .build();
+
+        let copy_url_btn = gtk::Button::builder().label("📋 Copiar URL").build();
+
+        let docs_btn = gtk::Button::builder().label("📖 Ver Documentación").build();
+
+        let close_btn = gtk::Button::builder().label("Cerrar").build();
+
+        buttons_box.append(&copy_url_btn);
+        buttons_box.append(&docs_btn);
+        buttons_box.append(&close_btn);
+
+        // Conectar eventos
+        copy_url_btn.connect_clicked(move |btn| {
+            if let Some(display) = gtk::gdk::Display::default() {
+                let clipboard = display.clipboard();
+                clipboard.set_text("http://localhost:8788");
+
+                let original_label = btn.label().unwrap_or_default();
+                btn.set_label("✓ Copiado!");
+
+                let btn_clone = btn.clone();
+                gtk::glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(1500),
+                    move || {
+                        btn_clone.set_label(&original_label);
+                    },
+                );
+            }
+        });
+
+        let notes_dir_for_docs = self.notes_dir.clone();
+        let dialog_for_docs = dialog.clone();
+        docs_btn.connect_clicked(move |_| {
+            dialog_for_docs.close();
+
+            // Intentar varias rutas posibles para la documentación
+            let possible_paths = vec![
+                std::path::PathBuf::from(
+                    "/home/abel/Programacion/notnative/notnative-app/docs/MCP_INTEGRATION.md",
+                ),
+                std::path::PathBuf::from("docs/MCP_INTEGRATION.md"),
+                notes_dir_for_docs
+                    .root()
+                    .parent()
+                    .map(|p| p.join("notnative-app/docs/MCP_INTEGRATION.md"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("docs/MCP_INTEGRATION.md")),
+            ];
+
+            // Buscar el primer path que exista
+            let docs_path = possible_paths
+                .into_iter()
+                .find(|p| p.exists())
+                .unwrap_or_else(|| std::path::PathBuf::from("docs/MCP_INTEGRATION.md"));
+
+            std::thread::spawn(move || {
+                if let Err(e) = open::that(&docs_path) {
+                    eprintln!("Error abriendo documentación MCP: {}", e);
+                }
+            });
+        });
+
+        let dialog_for_close = dialog.clone();
+        close_btn.connect_clicked(move |_| {
+            dialog_for_close.close();
+        });
+
+        // Ensamblar todo
+        main_box.append(&header_box);
+        main_box.append(&info_frame);
+        main_box.append(&buttons_box);
+
+        dialog.set_child(Some(&main_box));
         dialog.present();
     }
 
@@ -10463,6 +11759,22 @@ impl MainApp {
         menu_box.append(&preferences_button);
         menu_box.append(&workspace_button);
         menu_box.append(&shortcuts_button);
+
+        // Botón de MCP Server Info
+        let mcp_server_button = gtk::Button::builder()
+            .label("MCP Server")
+            .halign(gtk::Align::Fill)
+            .build();
+        mcp_server_button.add_css_class("flat");
+        mcp_server_button.connect_clicked(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move |_| {
+                sender.input(AppMsg::ShowMCPServerInfo);
+            }
+        ));
+        menu_box.append(&mcp_server_button);
+
         menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         menu_box.append(&about_button);
 
@@ -11063,7 +12375,10 @@ impl MainApp {
     }
 
     /// Muestra un indicador de que la IA está "escribiendo"
-    fn append_chat_typing_indicator(&self) {
+    fn append_chat_typing_indicator(&self, status_text: &str) {
+        // Primero eliminar cualquier indicador previo
+        self.remove_chat_typing_indicator();
+
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.set_margin_top(6);
         row.set_margin_bottom(6);
@@ -11084,7 +12399,7 @@ impl MainApp {
         bubble.add_css_class("chat-bubble-assistant");
         bubble.add_css_class("chat-bubble-typing");
 
-        let label = gtk::Label::new(Some("Escribiendo..."));
+        let label = gtk::Label::new(Some(status_text));
         label.add_css_class("chat-typing-indicator");
         label.set_xalign(0.0);
         bubble.append(&label);
@@ -11118,6 +12433,175 @@ impl MainApp {
         }
     }
 
+    /// Convierte un tipo de herramienta MCP en un mensaje de estado amigable
+    fn tool_to_status_message(tool: &crate::mcp::tools::MCPToolCall) -> String {
+        use crate::mcp::tools::MCPToolCall;
+
+        match tool {
+            // Gestión de notas
+            MCPToolCall::ReadNote { .. } => "Leyendo nota...".to_string(),
+            MCPToolCall::UpdateNote { .. } => "Actualizando nota...".to_string(),
+            MCPToolCall::CreateNote { .. } => "Creando nota...".to_string(),
+            MCPToolCall::DeleteNote { .. } => "Eliminando nota...".to_string(),
+            MCPToolCall::RenameNote { .. } => "Renombrando nota...".to_string(),
+            MCPToolCall::DuplicateNote { .. } => "Duplicando nota...".to_string(),
+            MCPToolCall::AppendToNote { .. } => "Añadiendo contenido...".to_string(),
+            MCPToolCall::ListNotes { .. } => "Listando notas...".to_string(),
+
+            // Búsqueda
+            MCPToolCall::SearchNotes { .. } => "Buscando notas...".to_string(),
+            MCPToolCall::FuzzySearch { .. } => "Buscando...".to_string(),
+            MCPToolCall::SearchByTag { .. } => "Buscando por etiqueta...".to_string(),
+            MCPToolCall::GetNotesWithTag { .. } => "Buscando por etiqueta...".to_string(),
+            MCPToolCall::SearchByDateRange { .. } => "Buscando por fechas...".to_string(),
+
+            // Organización
+            MCPToolCall::CreateFolder { .. } => "Creando carpeta...".to_string(),
+            MCPToolCall::DeleteFolder { .. } => "Eliminando carpeta...".to_string(),
+            MCPToolCall::RenameFolder { .. } => "Renombrando carpeta...".to_string(),
+            MCPToolCall::MoveFolder { .. } => "Moviendo carpeta...".to_string(),
+            MCPToolCall::MoveNote { .. } => "Moviendo nota...".to_string(),
+            MCPToolCall::AddTag { .. } => "Añadiendo etiqueta...".to_string(),
+            MCPToolCall::RemoveTag { .. } => "Eliminando etiqueta...".to_string(),
+            MCPToolCall::CreateTag { .. } => "Creando etiqueta...".to_string(),
+            MCPToolCall::AddMultipleTags { .. } => "Añadiendo etiquetas...".to_string(),
+            MCPToolCall::AnalyzeAndTagNote { .. } => {
+                "Analizando nota para sugerir tags...".to_string()
+            }
+            MCPToolCall::ArchiveNote { .. } => "Archivando nota...".to_string(),
+
+            // Análisis
+            MCPToolCall::GetNoteStats { .. } => "Analizando nota...".to_string(),
+            MCPToolCall::AnalyzeNoteStructure { .. } => "Analizando estructura...".to_string(),
+            MCPToolCall::GetWordCount { .. } => "Contando palabras...".to_string(),
+            MCPToolCall::FindBrokenLinks { .. } => "Buscando enlaces rotos...".to_string(),
+            MCPToolCall::SuggestRelatedNotes { .. } => "Buscando notas relacionadas...".to_string(),
+            MCPToolCall::GetRecentNotes { .. } => "Obteniendo notas recientes...".to_string(),
+            MCPToolCall::GetAllTags { .. } => "Obteniendo etiquetas...".to_string(),
+            MCPToolCall::ListFolders { .. } => "Listando carpetas...".to_string(),
+            MCPToolCall::GetNoteGraph { .. } => "Generando grafo de notas...".to_string(),
+
+            // Transformaciones
+            MCPToolCall::GenerateTableOfContents { .. } => "Generando índice...".to_string(),
+            MCPToolCall::ExtractCodeBlocks { .. } => "Extrayendo código...".to_string(),
+            MCPToolCall::FormatNote { .. } => "Formateando nota...".to_string(),
+            MCPToolCall::MergeNotes { .. } => "Combinando notas...".to_string(),
+            MCPToolCall::SplitNote { .. } => "Dividiendo nota...".to_string(),
+
+            // Control de UI
+            MCPToolCall::OpenNote { .. } => "Abriendo nota...".to_string(),
+            MCPToolCall::ShowNotification { .. } => "Mostrando notificación...".to_string(),
+            MCPToolCall::HighlightNote { .. } => "Resaltando nota...".to_string(),
+            MCPToolCall::ToggleSidebar => "Alternando barra lateral...".to_string(),
+            MCPToolCall::SwitchMode { .. } => "Cambiando modo...".to_string(),
+            MCPToolCall::RefreshSidebar => "Actualizando barra lateral...".to_string(),
+            MCPToolCall::FocusSearch => "Enfocando búsqueda...".to_string(),
+
+            // Exportación
+            MCPToolCall::ExportNote { .. } => "Exportando nota...".to_string(),
+            MCPToolCall::ExportMultipleNotes { .. } => "Exportando notas...".to_string(),
+            MCPToolCall::BackupNotes { .. } => "Creando respaldo...".to_string(),
+            MCPToolCall::ImportFromUrl { .. } => "Importando desde URL...".to_string(),
+
+            // Multimedia
+            MCPToolCall::InsertImage { .. } => "Insertando imagen...".to_string(),
+            MCPToolCall::InsertYouTubeVideo { .. } => "Insertando video...".to_string(),
+
+            // Default
+            _ => "Procesando...".to_string(),
+        }
+    }
+
+    /// Detecta si un mensaje es un resultado de búsqueda MCP
+    fn is_search_result(&self, content: &str) -> bool {
+        // Patrón: "✓ N nota(s) encontrada(s):\n  1. ..."
+        content.contains("✓")
+            && content.contains("nota(s) encontrada(s):")
+            && content
+                .lines()
+                .any(|line| line.trim().starts_with("1.") || line.trim().starts_with("2."))
+    }
+
+    /// Renderiza resultados de búsqueda como widget clickable
+    fn append_search_results_widget(&self, content: &str, sender: &ComponentSender<Self>) {
+        // Parsear el contenido para extraer las notas
+        let mut notes = Vec::new();
+        let mut count = 0;
+
+        for line in content.lines() {
+            // Detectar la línea del header para obtener el count
+            if line.contains("nota(s) encontrada(s):") {
+                if let Some(num_str) = line.split_whitespace().next() {
+                    if let Some(stripped) = num_str.strip_prefix("✓") {
+                        count = stripped.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            // Parsear líneas numeradas: "  1. NotaNombre"
+            else if let Some(rest) = line.trim().strip_prefix(|c: char| c.is_numeric()) {
+                if let Some(note_name) = rest.strip_prefix('.').map(|s| s.trim()) {
+                    notes.push(note_name.to_string());
+                }
+            }
+        }
+
+        if notes.is_empty() {
+            // Fallback: mostrar como texto normal
+            self.append_chat_message(crate::ai_chat::MessageRole::Assistant, content);
+            return;
+        }
+
+        // Crear widget clickable
+        let results_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        results_row.set_margin_top(6);
+        results_row.set_margin_bottom(6);
+        results_row.set_hexpand(true);
+        results_row.add_css_class("chat-row");
+        results_row.add_css_class("chat-row-assistant");
+        results_row.set_halign(gtk::Align::Start);
+
+        let avatar = gtk::Label::new(Some("🔍"));
+        avatar.add_css_class("chat-avatar");
+        avatar.add_css_class("chat-avatar-assistant");
+        avatar.set_valign(gtk::Align::Start);
+
+        let bubble = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        bubble.add_css_class("chat-bubble");
+        bubble.add_css_class("chat-bubble-assistant");
+
+        let header = gtk::Label::new(Some(&format!(
+            "✓ {} nota(s) encontrada(s):",
+            if count > 0 { count } else { notes.len() }
+        )));
+        header.set_xalign(0.0);
+        header.add_css_class("heading");
+        bubble.append(&header);
+
+        // Crear botones clickables
+        for (i, note_name) in notes.iter().enumerate() {
+            let note_btn = gtk::Button::builder()
+                .label(&format!("  {}. {}", i + 1, note_name))
+                .halign(gtk::Align::Start)
+                .build();
+            note_btn.add_css_class("flat");
+            note_btn.set_margin_top(2);
+
+            let sender_clone = sender.clone();
+            let note_name_owned = note_name.clone();
+            note_btn.connect_clicked(move |_| {
+                sender_clone.input(AppMsg::LoadNote(note_name_owned.clone()));
+                sender_clone.input(AppMsg::ExitChatMode);
+            });
+
+            bubble.append(&note_btn);
+        }
+
+        results_row.append(&avatar);
+        results_row.append(&bubble);
+        self.chat_history_list.append(&results_row);
+        self.schedule_chat_scroll();
+    }
+
     /// Actualiza la lista de notas en el contexto del chat
     fn refresh_context_list(&self) {
         // Limpiar lista actual
@@ -11145,9 +12629,16 @@ impl MainApp {
                     icon.add_css_class("chat-context-icon");
                     row.append(&icon);
 
-                    let label = gtk::Label::new(Some(note.name()));
+                    // Mostrar solo el nombre del archivo, no la ruta completa
+                    let display_name = std::path::Path::new(note.name())
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or(note.name());
+
+                    let label = gtk::Label::new(Some(display_name));
                     label.set_xalign(0.0);
                     label.set_hexpand(true);
+                    label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
                     label.add_css_class("chat-context-label");
                     row.append(&label);
 

@@ -242,20 +242,25 @@ impl NotesDatabase {
     ) -> Result<i64> {
         let now = Utc::now().timestamp();
 
-        // Insertar o actualizar nota
+        // Insertar o actualizar nota (manejar conflictos tanto en name como en path)
         self.conn.execute(
             r#"
             INSERT INTO notes (name, path, folder, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(name) DO UPDATE SET
-                path = excluded.path,
+            ON CONFLICT(path) DO UPDATE SET
+                name = excluded.name,
                 folder = excluded.folder,
                 updated_at = excluded.updated_at
             "#,
             params![name, path, folder, now, now],
         )?;
 
-        let note_id = self.conn.last_insert_rowid();
+        // Obtener el ID de la nota (puede ser nueva o existente)
+        let note_id: i64 = self.conn.query_row(
+            "SELECT id FROM notes WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
 
         // Indexar en FTS5
         self.conn.execute(
@@ -469,6 +474,49 @@ impl NotesDatabase {
             return Ok(vec![]);
         }
 
+        // Si la búsqueda empieza con #, buscar por tag exacto en lugar de contenido
+        if query_text.trim().starts_with('#') {
+            let tag_name = query_text.trim()[1..].trim().to_lowercase();
+
+            if tag_name.is_empty() {
+                return Ok(vec![]);
+            }
+
+            // Buscar notas que tengan exactamente este tag
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT DISTINCT
+                    notes.id,
+                    notes.name,
+                    notes.path,
+                    '' as snippet,
+                    1.0 as relevance
+                FROM notes
+                JOIN note_tags ON notes.id = note_tags.note_id
+                JOIN tags ON note_tags.tag_id = tags.id
+                WHERE LOWER(tags.name) = ?1
+                ORDER BY notes.name
+                LIMIT 50
+                "#,
+            )?;
+
+            let results = stmt
+                .query_map([&tag_name], |row| {
+                    Ok(SearchResult {
+                        note_id: row.get(0)?,
+                        note_name: row.get(1)?,
+                        note_path: row.get(2)?,
+                        snippet: row.get(3)?,
+                        relevance: row.get::<_, f64>(4)? as f32,
+                        matched_tags: vec![tag_name.clone()],
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            return Ok(results);
+        }
+
+        // Búsqueda normal por contenido usando FTS5
         // Construir query FTS5 inteligente
         let fts_query = Self::build_fts_query(query_text);
 

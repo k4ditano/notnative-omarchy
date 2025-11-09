@@ -72,6 +72,20 @@ pub enum MCPToolCall {
         #[serde(skip_serializing_if = "Option::is_none")]
         parent: Option<String>,
     },
+    DeleteFolder {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recursive: Option<bool>, // Si true, elimina contenido; si false, solo si está vacía
+    },
+    RenameFolder {
+        old_name: String,
+        new_name: String,
+    },
+    MoveFolder {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_parent: Option<String>, // None = mover a raíz
+    },
     AddTag {
         note: String,
         tag: String,
@@ -79,6 +93,18 @@ pub enum MCPToolCall {
     RemoveTag {
         note: String,
         tag: String,
+    },
+    CreateTag {
+        tag: String,
+    },
+    AddMultipleTags {
+        note: String,
+        tags: Vec<String>,
+    },
+    AnalyzeAndTagNote {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_tags: Option<i32>, // Límite de tags a sugerir
     },
     ArchiveNote {
         name: String,
@@ -107,8 +133,14 @@ pub enum MCPToolCall {
         #[serde(skip_serializing_if = "Option::is_none")]
         limit: Option<i32>,
     },
-    GetAllTags,
-    ListFolders,
+    GetAllTags {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        _dummy: Option<()>,
+    },
+    ListFolders {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        _dummy: Option<()>,
+    },
     GetNoteGraph {
         #[serde(skip_serializing_if = "Option::is_none")]
         max_depth: Option<i32>,
@@ -267,10 +299,8 @@ impl MCPToolRegistry {
 
     /// Crea un registro con todas las herramientas disponibles
     pub fn new() -> Self {
-        // Por ahora retornamos las core tools también
-        // TODO: Convertir get_all_tool_definitions() a formato Vec<Value>
         Self {
-            tools: crate::mcp::tool_schemas::get_core_tool_definitions(),
+            tools: crate::mcp::tool_schemas::get_all_tool_definitions_as_values(),
         }
     }
 

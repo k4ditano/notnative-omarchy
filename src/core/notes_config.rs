@@ -38,7 +38,7 @@ fn default_ai_model() -> String {
 }
 
 fn default_temperature() -> f32 {
-    0.7
+    0.2
 }
 
 fn default_max_tokens() -> u32 {

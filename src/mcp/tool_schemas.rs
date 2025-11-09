@@ -87,27 +87,6 @@ pub fn get_core_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "append_to_note",
-                "description": "Agrega contenido al final de una nota existente. USA cuando el usuario diga: 'agrega', 'añade al final', 'append', 'continúa la nota'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Nombre de la nota a la que agregar contenido"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Contenido a agregar al final de la nota"
-                        }
-                    },
-                    "required": ["name", "content"]
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
                 "name": "list_notes",
                 "description": "Lista todas las notas. USA cuando el usuario diga: 'lista', 'muestra todas', 'qué notas tengo'.",
                 "parameters": {
@@ -159,14 +138,14 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
         // ==================== GESTIÓN DE NOTAS ====================
         MCPTool {
             name: "create_note".to_string(),
-            description: "Crea una nueva nota en NotNative con el contenido especificado"
+            description: "Crea una nueva nota en NotNative con el contenido especificado. Si quieres crear en una carpeta, usa el parámetro 'folder' (NO incluyas la carpeta en 'name')."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Nombre de la nota (con o sin extensión .md)"
+                        "description": "Nombre de la nota SOLO (sin carpeta, sin path). Ejemplo: 'Mi Nota' o 'Mi Nota.md'. NO uses 'carpeta/Mi Nota'."
                     },
                     "content": {
                         "type": "string",
@@ -174,7 +153,7 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Carpeta donde crear la nota (opcional)"
+                        "description": "Nombre de la carpeta donde crear la nota. Ejemplo: 'workflows'. Si la carpeta no existe, se creará automáticamente. IMPORTANTE: NO incluyas la carpeta en el parámetro 'name'."
                     }
                 },
                 "required": ["name", "content"]
@@ -207,6 +186,24 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
                     "content": {
                         "type": "string",
                         "description": "Nuevo contenido completo"
+                    }
+                },
+                "required": ["name", "content"]
+            }),
+        },
+        MCPTool {
+            name: "append_to_note".to_string(),
+            description: "Añade contenido al final de una nota existente sin borrar lo que ya tiene".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Nombre de la nota"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Contenido a añadir al final"
                     }
                 },
                 "required": ["name", "content"]
@@ -505,17 +502,17 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
         // ==================== ORGANIZACIÓN ====================
         MCPTool {
             name: "create_folder".to_string(),
-            description: "Crea una nueva carpeta para organizar notas".to_string(),
+            description: "Crea una nueva carpeta vacía para organizar notas. Úsala ANTES de mover notas a esa carpeta con move_note.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Nombre de la carpeta"
+                        "description": "Nombre de la carpeta a crear. Ejemplo: 'workflows', 'proyectos', etc."
                     },
                     "parent": {
                         "type": "string",
-                        "description": "Carpeta padre (opcional)"
+                        "description": "Carpeta padre si quieres crear una subcarpeta (opcional)"
                     }
                 },
                 "required": ["name"]
@@ -531,20 +528,163 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
         },
         MCPTool {
             name: "move_note".to_string(),
-            description: "Mueve una nota a una carpeta diferente".to_string(),
+            description: "Mueve una nota existente a una carpeta. Útil para organizar notas en carpetas después de crearlas.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Nombre de la nota"
+                        "description": "Nombre de la nota a mover (sin carpeta actual, solo el nombre)"
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Carpeta de destino"
+                        "description": "Nombre de la carpeta de destino. Si no existe, se creará automáticamente."
                     }
                 },
                 "required": ["name", "folder"]
+            }),
+        },
+        MCPTool {
+            name: "delete_folder".to_string(),
+            description: "Elimina una carpeta. Por defecto solo elimina carpetas vacías.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Nombre de la carpeta a eliminar"
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "Si true, elimina la carpeta aunque tenga contenido. Por defecto false."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        MCPTool {
+            name: "rename_folder".to_string(),
+            description: "Renombra una carpeta existente".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "old_name": {
+                        "type": "string",
+                        "description": "Nombre actual de la carpeta"
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "Nuevo nombre para la carpeta"
+                    }
+                },
+                "required": ["old_name", "new_name"]
+            }),
+        },
+        MCPTool {
+            name: "move_folder".to_string(),
+            description: "Mueve una carpeta a otra ubicación".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Nombre de la carpeta a mover"
+                    },
+                    "new_parent": {
+                        "type": "string",
+                        "description": "Carpeta padre de destino (omitir o null para mover a raíz)"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        MCPTool {
+            name: "add_tag".to_string(),
+            description: "Añade un tag a una nota. Los tags se agregan en el frontmatter YAML.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": "Nombre de la nota"
+                    },
+                    "tag": {
+                        "type": "string",
+                        "description": "Tag a añadir (sin el #)"
+                    }
+                },
+                "required": ["note", "tag"]
+            }),
+        },
+        MCPTool {
+            name: "remove_tag".to_string(),
+            description: "Elimina un tag de una nota".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": "Nombre de la nota"
+                    },
+                    "tag": {
+                        "type": "string",
+                        "description": "Tag a eliminar"
+                    }
+                },
+                "required": ["note", "tag"]
+            }),
+        },
+        MCPTool {
+            name: "create_tag".to_string(),
+            description: "Crea/registra un tag nuevo (informativo, los tags se crean al usarlos)".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tag": {
+                        "type": "string",
+                        "description": "Nombre del tag a crear"
+                    }
+                },
+                "required": ["tag"]
+            }),
+        },
+        MCPTool {
+            name: "add_multiple_tags".to_string(),
+            description: "Añade múltiples tags a una nota de una vez".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": "Nombre de la nota"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Lista de tags a añadir"
+                    }
+                },
+                "required": ["note", "tags"]
+            }),
+        },
+        MCPTool {
+            name: "analyze_and_tag_note".to_string(),
+            description: "Analiza el contenido de una nota y sugiere tags relevantes basados en frecuencia de palabras. NO los aplica automáticamente.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Nombre de la nota a analizar"
+                    },
+                    "max_tags": {
+                        "type": "integer",
+                        "description": "Número máximo de tags a sugerir (por defecto 5)"
+                    }
+                },
+                "required": ["name"]
             }),
         },
         // ==================== AUTOMATIZACIÓN ====================
@@ -604,4 +744,21 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
             }),
         },
     ]
+}
+
+/// Convierte todas las herramientas al formato OpenAI (Vec<Value>)
+pub fn get_all_tool_definitions_as_values() -> Vec<Value> {
+    get_all_tool_definitions()
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters
+                }
+            })
+        })
+        .collect()
 }

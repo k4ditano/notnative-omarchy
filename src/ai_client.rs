@@ -107,12 +107,49 @@ impl AIClient for OpenAIClient {
                 Puedes leer y trabajar directamente con el contenido que se muestra a continuación:\n\n\
                 {}\n\n\
                 Si el usuario hace preguntas sobre estas notas, responde usando directamente este contenido. \
-                NO necesitas usar la herramienta read_note para notas que ya están en el contexto.",
+                NO necesitas usar la herramienta read_note para notas que ya están en el contexto.\n\n\
+                📁 ORGANIZACIÓN DE NOTAS Y CARPETAS:\n\
+                - Para CREAR carpeta nueva: usa create_folder con el nombre de la carpeta\n\
+                - Para MOVER nota existente a carpeta: usa move_note (name=nota, folder=carpeta)\n\
+                - Para CREAR nota nueva en carpeta: usa create_note con parámetros (name=nota, folder=carpeta)\n\
+                - NUNCA incluyas la carpeta en el nombre de la nota (❌ 'workflows/nota.md' ✓ name='nota', folder='workflows')\n\n\
+                🔧 EJECUCIÓN DE HERRAMIENTAS:\n\
+                - SIEMPRE que el usuario pida una acción (crear, mover, renombrar, buscar, etc), EJECUTA la herramienta correspondiente\n\
+                - NO digas 'voy a hacer X' sin ejecutar la herramienta - hazlo directamente\n\
+                - Si dices que harás algo, DEBES incluir el tool_call en la misma respuesta\n\
+                - Ejemplo: Usuario dice 'renombra la nota' → TÚ ejecutas rename_note inmediatamente, no solo respondes 'voy a renombrarla'\n\n\
+                ⚠️ FORMATO DE RESPUESTA CON HERRAMIENTAS:\n\
+                Cuando uses herramientas, las ejecutas Y luego recibes los resultados. Entonces DEBES:\n\
+                1. Incluir un mensaje de texto junto con los tool_calls\n\
+                2. En ese texto, explica QUÉ ENCONTRASTE y POR QUÉ es relevante\n\n\
+                Ejemplo de búsqueda:\n\
+                Usuario: 'Busca notas con contraseñas'\n\
+                Tu respuesta: 'He encontrado 4 notas que contienen información sobre contraseñas. \
+                La mayoría parecen ser credenciales de servicios web y configuraciones de servidor. \
+                Te recomiendo revisar especialmente \"Cuentas-Servicios.md\" que tiene múltiples contraseñas en texto plano.'\n\
+                [+ tool_call a search_notes]\n\n\
+                NUNCA respondas SOLO con tool_calls. Siempre proporciona contexto y análisis de los resultados.",
                 context
             )
         } else {
             "Eres un asistente útil para gestionar notas en NotNative. \
-            Puedes usar las herramientas disponibles para crear, leer, modificar y organizar notas."
+            Puedes usar las herramientas disponibles para crear, leer, modificar y organizar notas.\n\n\
+            📁 ORGANIZACIÓN DE NOTAS Y CARPETAS:\n\
+            - Para CREAR carpeta nueva: usa create_folder con el nombre de la carpeta\n\
+            - Para MOVER nota existente a carpeta: usa move_note (name=nota, folder=carpeta)\n\
+            - Para CREAR nota nueva en carpeta: usa create_note con parámetros (name=nota, folder=carpeta)\n\
+            - NUNCA incluyas la carpeta en el nombre de la nota (❌ 'workflows/nota.md' ✓ name='nota', folder='workflows')\n\n\
+            ⚠️ FORMATO DE RESPUESTA CON HERRAMIENTAS:\n\
+            Cuando uses herramientas, las ejecutas Y luego recibes los resultados. Entonces DEBES:\n\
+            1. Incluir un mensaje de texto junto con los tool_calls\n\
+            2. En ese texto, explica QUÉ ENCONTRASTE y POR QUÉ es relevante\n\n\
+            Ejemplo de búsqueda:\n\
+            Usuario: 'Busca notas con contraseñas'\n\
+            Tu respuesta: 'He encontrado 4 notas que contienen información sobre contraseñas. \
+            La mayoría parecen ser credenciales de servicios web y configuraciones de servidor. \
+            Te recomiendo revisar especialmente \"Cuentas-Servicios.md\" que tiene múltiples contraseñas en texto plano.'\n\
+            [+ tool_call a search_notes]\n\n\
+            NUNCA respondas SOLO con tool_calls. Siempre proporciona contexto y análisis de los resultados."
                 .to_string()
         };
 
@@ -244,6 +281,9 @@ impl OpenAIClient {
             if !openai_tools.is_empty() {
                 request_body["tools"] = json!(openai_tools);
                 request_body["tool_choice"] = json!("auto");
+                // IMPORTANTE: Forzar parallel_tool_calls = false para que el modelo
+                // tenga más oportunidad de generar contenido explicativo
+                request_body["parallel_tool_calls"] = json!(false);
             }
         }
 

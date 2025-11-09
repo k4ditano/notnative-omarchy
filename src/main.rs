@@ -26,6 +26,7 @@ mod ai_chat;
 mod ai_client;
 mod app;
 mod core;
+mod file_watcher;
 mod i18n;
 mod mcp;
 mod music_player;

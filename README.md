@@ -88,6 +88,9 @@ sudo ./install.sh
 - **Real-time Markdown rendering** - See formatted text as you type
 - **Lightning-fast buffer** - Powered by ropey, handles huge documents
 - **Interactive TODOs** - Click checkboxes to mark tasks complete
+- **Smart tag system** - #tags clickable anywhere, even at line start
+- **YAML frontmatter tags** - Tags in lists (• tag) are also clickable
+- **Precise tag search** - Search #tag finds only that specific tag
 - **Image preview** - See images inline, click to open
 
 ### 🤖 AI Integration
@@ -95,10 +98,12 @@ sudo ./install.sh
 - **OpenAI & OpenRouter support** - Use GPT-4, Claude, or any LLM
 - **Context-aware** - Attach notes as context for better answers
 - **Smart suggestions** - AI helps you write better
+- **40+ MCP tools available** - Advanced automation capabilities (v0.1.6)
+- **Enhanced AI workflows** - More powerful integrations and automations (v0.1.6)
 
 ### 🔌 Automation & API
 - **MCP Server included** - REST API on port 8788
-- **8 powerful tools** - Create, read, update, search, delete notes via API
+- **40+ powerful tools** - Comprehensive automation toolkit (v0.1.6)
 - **External control** - Integrate with n8n, Python, curl, anything
 - **iOS Shortcuts ready** - Capture notes from your phone
 - **Telegram bot support** - Send messages directly to your notes
@@ -185,7 +190,9 @@ curl -X POST http://localhost:8788/mcp/call_tool \
 
 ## 📚 Documentation
 
-- **[MCP Integration Guide](docs/MCP_INTEGRATION.md)** - Complete API reference with examples
+- **[ cURL Examples](docs/CURL_EXAMPLES.md)** - Ready-to-use command examples
+- **[🔌 MCP Integration Guide](docs/MCP_INTEGRATION.md)** - Complete API reference
+- **[🛠️ MCP Tools Reference](docs/MCP_TOOLS_REFERENCE.md)** - Full list of 40+ available tools
 - **[Background Control](docs/BACKGROUND_CONTROL.md)** - System tray and external control
 
 ---
@@ -212,6 +219,10 @@ curl -X POST http://localhost:8788/mcp/call_tool \
 - [x] YouTube player
 - [x] System tray
 - [x] Multi-language (i18n)
+- [x] 40+ MCP automation tools (v0.1.6)
+- [x] Smart tag system (v0.1.6)
+- [x] YAML frontmatter clickable tags (v0.1.6)
+- [x] Precise tag-based search (v0.1.6)
 - [ ] Mobile app (planned)
 - [ ] End-to-end encryption (planned)
 - [ ] Cloud sync (planned)

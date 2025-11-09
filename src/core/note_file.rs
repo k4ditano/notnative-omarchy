@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 pub struct NoteFile {
     /// Ruta absoluta al archivo .md
     path: PathBuf,
-    /// Nombre de la nota (sin extensión)
-    name: String,
+    /// Nombre de la nota (sin extensión, puede incluir ruta relativa como "Docs VS/nota")
+    pub(crate) name: String,
 }
 
 impl NoteFile {
@@ -152,7 +152,19 @@ impl NotesDirectory {
             if path.is_dir() {
                 self.scan_directory(&path, notes)?;
             } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-                if let Ok(note) = NoteFile::open(&path) {
+                if let Ok(mut note) = NoteFile::open(&path) {
+                    // Si la nota está en una subcarpeta, ajustar su nombre para incluir la ruta relativa
+                    if let Ok(relative_path) = path.strip_prefix(&self.root) {
+                        if let Some(parent) = relative_path.parent() {
+                            if parent != Path::new("") {
+                                // Reconstruir el nombre con la carpeta: "Docs VS/nombre"
+                                let folder = parent.to_string_lossy();
+                                let file_stem =
+                                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                                note.name = format!("{}/{}", folder, file_stem);
+                            }
+                        }
+                    }
                     notes.push(note);
                 }
             }
@@ -176,14 +188,38 @@ impl NotesDirectory {
         content: &str,
     ) -> Result<NoteFile> {
         let filename = format!("{}.md", name);
-        let path = self.root.join(folder).join(filename);
+        let folder_path = self.root.join(folder);
+
+        // Crear la carpeta si no existe (incluyendo carpetas padre)
+        std::fs::create_dir_all(&folder_path)?;
+
+        let path = folder_path.join(filename);
         NoteFile::create(path, content)
     }
 
     /// Busca una nota por nombre
     pub fn find_note(&self, name: &str) -> Result<Option<NoteFile>> {
         let notes = self.list_notes()?;
-        Ok(notes.into_iter().find(|n| n.name() == name))
+
+        // Primero intentar coincidencia exacta por nombre
+        if let Some(note) = notes.iter().find(|n| n.name() == name).cloned() {
+            return Ok(Some(note));
+        }
+
+        // Si el nombre tiene '/', intentar construir la ruta y buscar por ruta
+        if name.contains('/') {
+            let target_path = self.root.join(format!("{}.md", name));
+            if let Some(note) = notes.iter().find(|n| n.path() == target_path).cloned() {
+                return Ok(Some(note));
+            }
+        }
+
+        // Si no se encuentra, buscar solo por el nombre base (sin carpeta)
+        let base_name = name.split('/').last().unwrap_or(name);
+        Ok(notes.into_iter().find(|n| {
+            let note_base = n.name().split('/').last().unwrap_or(n.name());
+            note_base == base_name
+        }))
     }
 }
 
