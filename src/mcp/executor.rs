@@ -134,6 +134,33 @@ impl MCPToolExecutor {
             MCPToolCall::IndexNote { note_path } => self.index_note(note_path),
             MCPToolCall::ReindexAllNotes => self.reindex_all_notes(),
 
+            // === Recordatorios ===
+            MCPToolCall::CreateReminder {
+                title,
+                due_date,
+                description,
+                priority,
+                repeat,
+                note_name,
+            } => self.create_reminder(
+                &title,
+                &due_date,
+                description,
+                priority,
+                repeat.as_deref(),
+                note_name.as_deref(),
+            ),
+
+            MCPToolCall::ListReminders { status, limit } => {
+                self.list_reminders(status.as_deref(), limit)
+            }
+
+            MCPToolCall::CompleteReminder { id } => self.complete_reminder(id),
+
+            MCPToolCall::SnoozeReminder { id, minutes } => self.snooze_reminder(id, minutes as i64),
+
+            MCPToolCall::DeleteReminder { id } => self.delete_reminder(id),
+
             // === UI - DESHABILITADAS (pendiente de implementar) ===
             // MCPToolCall::OpenNote { .. }
             // | MCPToolCall::ShowNotification { .. }
@@ -1286,7 +1313,11 @@ impl MCPToolExecutor {
         std::fs::rename(&old_path, &new_path)?;
 
         // Actualizar todas las notas de esta carpeta en la BD
-        if let Err(e) = self.notes_db.borrow().update_notes_folder(old_name, new_name) {
+        if let Err(e) = self
+            .notes_db
+            .borrow()
+            .update_notes_folder(old_name, new_name)
+        {
             eprintln!("⚠️ Error actualizando carpeta en BD: {}", e);
         }
 
@@ -1347,7 +1378,11 @@ impl MCPToolExecutor {
         std::fs::rename(&old_path, &new_path)?;
 
         // Actualizar todas las notas de esta carpeta en la BD
-        if let Err(e) = self.notes_db.borrow().update_notes_folder(name, &new_folder_path) {
+        if let Err(e) = self
+            .notes_db
+            .borrow()
+            .update_notes_folder(name, &new_folder_path)
+        {
             eprintln!("⚠️ Error actualizando carpeta en BD: {}", e);
         }
 
@@ -1601,20 +1636,52 @@ impl MCPToolExecutor {
         let results_json: Vec<_> = results
             .iter()
             .map(|r| {
+                // Extraer solo el nombre del archivo sin la ruta completa
+                let note_name = r
+                    .note_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("desconocido");
+
                 json!({
+                    "note_name": note_name,
                     "note_path": r.note_path.display().to_string(),
                     "chunk_index": r.chunk_index,
-                    "similarity": r.similarity,
+                    "similarity": format!("{:.2}%", r.similarity * 100.0),
                     "snippet": &r.snippet
                 })
             })
             .collect();
 
+        // Crear una lista legible de los nombres de notas para la respuesta
+        let note_names_list: Vec<String> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let note_name = r
+                    .note_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("desconocido");
+                format!(
+                    "{}. \"{}\" - Similitud: {:.0}%",
+                    i + 1,
+                    note_name.trim_end_matches(".md"),
+                    r.similarity * 100.0
+                )
+            })
+            .collect();
+
         Ok(MCPToolResult::success(json!({
-            "message": format!("✓ {} resultados encontrados para '{}'", results.len(), query),
+            "message": format!("✓ {} resultados para '{}'. RESPONDE AL USUARIO CON ESTA LISTA EXACTA:\n\n{}",
+                results.len(),
+                query,
+                note_names_list.join("\n")),
             "query": query,
             "results": results_json,
-            "total": results.len()
+            "note_names_list": note_names_list,
+            "total": results.len(),
+            "instruction": "Muestra al usuario la lista de resultados EXACTAMENTE como aparece en 'note_names_list'. NO inventes notas."
         })))
     }
 
@@ -1804,6 +1871,209 @@ impl MCPToolExecutor {
             "total_chunks": result.total_chunks,
             "indexed_notes": result.indexed_notes,
             "errors": result.errors
+        })))
+    }
+
+    // ==================== Recordatorios ====================
+
+    fn create_reminder(
+        &self,
+        title: &str,
+        due_date: &str,
+        description: Option<String>,
+        priority: Option<String>,
+        repeat_pattern: Option<&str>,
+        note_name: Option<&str>,
+    ) -> Result<MCPToolResult> {
+        use crate::reminders::{Priority, Reminder, ReminderStatus, RepeatPattern};
+        use chrono::{DateTime, Utc};
+
+        // Parsear fecha como UTC
+        let due_date_parsed = DateTime::parse_from_rfc3339(due_date)
+            .map(|dt| dt.with_timezone(&Utc))
+            .or_else(|_| {
+                // Intentar formato más simple: "YYYY-MM-DD HH:MM"
+                chrono::NaiveDateTime::parse_from_str(due_date, "%Y-%m-%d %H:%M")
+                    .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+            })
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Formato de fecha inválido: {}. Use 'YYYY-MM-DD HH:MM' o RFC3339",
+                    e
+                )
+            })?;
+
+        // Parsear prioridad
+        let priority_enum = match priority.as_deref() {
+            Some("urgent") | Some("urgente") => Priority::Urgent,
+            Some("high") | Some("alta") => Priority::High,
+            Some("medium") | Some("media") => Priority::Medium,
+            Some("low") | Some("baja") => Priority::Low,
+            None => Priority::Medium,
+            _ => Priority::Medium,
+        };
+
+        // Parsear patrón de repetición
+        let repeat_enum = match repeat_pattern {
+            Some("daily") | Some("diario") => RepeatPattern::Daily,
+            Some("weekly") | Some("semanal") => RepeatPattern::Weekly,
+            Some("monthly") | Some("mensual") => RepeatPattern::Monthly,
+            None => RepeatPattern::None,
+            _ => RepeatPattern::None,
+        };
+
+        // Buscar note_id si se proporciona note_name
+        let note_id = if let Some(name) = note_name {
+            // Buscar la nota en la base de datos usando get_note
+            match self.notes_db.borrow().get_note(name) {
+                Ok(Some(metadata)) => {
+                    println!(
+                        "✓ Vinculando recordatorio a nota '{}' (ID: {})",
+                        name, metadata.id
+                    );
+                    Some(metadata.id)
+                }
+                Ok(None) => {
+                    println!(
+                        "⚠️ Nota '{}' no encontrada, creando recordatorio sin vínculo",
+                        name
+                    );
+                    None
+                }
+                Err(e) => {
+                    println!("⚠️ Error buscando nota '{}': {}", name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Crear recordatorio en la base de datos
+        let db_path = self.notes_dir.root().parent().unwrap().join("reminders.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        let reminders_db = crate::reminders::ReminderDatabase::new(conn);
+        reminders_db.ensure_schema()?;
+
+        let id = reminders_db.create_reminder(
+            note_id,
+            title,
+            description.as_deref(),
+            due_date_parsed,
+            priority_enum,
+            repeat_enum,
+        )?;
+
+        Ok(MCPToolResult::success(json!({
+            "message": format!("✓ Recordatorio '{}' creado (ID: {})", title, id),
+            "reminder_id": id,
+            "title": title,
+            "due_date": due_date_parsed.to_rfc3339(),
+            "priority": format!("{:?}", priority_enum),
+            "repeat": format!("{:?}", repeat_enum),
+            "note_name": note_name,
+            "note_id": note_id
+        })))
+    }
+
+    fn list_reminders(&self, status: Option<&str>, limit: Option<i32>) -> Result<MCPToolResult> {
+        use crate::reminders::ReminderStatus;
+
+        let db_path = self.notes_dir.root().parent().unwrap().join("reminders.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        let reminders_db = crate::reminders::ReminderDatabase::new(conn);
+
+        // Convertir status a enum si se proporciona
+        let status_filter = status.and_then(|s| {
+            if s == "all" {
+                None
+            } else {
+                Some(match s {
+                    "pending" | "pendiente" => ReminderStatus::Pending,
+                    "completed" | "completado" => ReminderStatus::Completed,
+                    "snoozed" | "pospuesto" => ReminderStatus::Snoozed,
+                    _ => ReminderStatus::Pending,
+                })
+            }
+        });
+
+        let all_reminders = reminders_db.list_reminders(status_filter)?;
+
+        // Aplicar límite si se especifica
+        let mut filtered = all_reminders;
+        if let Some(lim) = limit {
+            filtered.truncate(lim as usize);
+        }
+
+        let is_spanish = self.i18n.borrow().current_language() == crate::i18n::Language::Spanish;
+
+        let reminders_json: Vec<_> = filtered
+            .iter()
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "title": r.title,
+                    "description": r.description,
+                    "due_date": r.format_due_date(is_spanish),
+                    "priority": format!("{:?}", r.priority),
+                    "status": format!("{:?}", r.status),
+                    "repeat": format!("{:?}", r.repeat_pattern),
+                    "note_id": r.note_id
+                })
+            })
+            .collect();
+
+        Ok(MCPToolResult::success(json!({
+            "message": format!("✓ {} recordatorios encontrados", filtered.len()),
+            "reminders": reminders_json,
+            "total": filtered.len()
+        })))
+    }
+
+    fn complete_reminder(&self, id: i64) -> Result<MCPToolResult> {
+        use crate::reminders::ReminderStatus;
+
+        let db_path = self.notes_dir.root().parent().unwrap().join("reminders.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        let reminders_db = crate::reminders::ReminderDatabase::new(conn);
+
+        reminders_db.update_status(id, ReminderStatus::Completed)?;
+
+        Ok(MCPToolResult::success(json!({
+            "message": format!("✓ Recordatorio {} marcado como completado", id),
+            "reminder_id": id,
+            "status": "completed"
+        })))
+    }
+
+    fn snooze_reminder(&self, id: i64, minutes: i64) -> Result<MCPToolResult> {
+        use chrono::{Duration, Utc};
+
+        let db_path = self.notes_dir.root().parent().unwrap().join("reminders.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        let reminders_db = crate::reminders::ReminderDatabase::new(conn);
+
+        // Calcular la nueva fecha de snooze
+        let snooze_until = Utc::now() + Duration::minutes(minutes);
+        reminders_db.snooze_reminder(id, snooze_until)?;
+
+        Ok(MCPToolResult::success(json!({
+            "message": format!("✓ Recordatorio {} pospuesto {} minutos", id, minutes),
+            "reminder_id": id,
+            "snoozed_minutes": minutes
+        })))
+    }
+
+    fn delete_reminder(&self, id: i64) -> Result<MCPToolResult> {
+        let db_path = self.notes_dir.root().parent().unwrap().join("reminders.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        let reminders_db = crate::reminders::ReminderDatabase::new(conn);
+
+        reminders_db.delete_reminder(id)?;
+
+        Ok(MCPToolResult::success(json!({
+            "message": format!("✓ Recordatorio {} eliminado", id),
+            "reminder_id": id
         })))
     }
 }

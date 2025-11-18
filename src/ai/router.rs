@@ -16,6 +16,7 @@ pub struct IntentClassification {
 }
 
 /// Router que clasifica la intención del usuario y delega al agente apropiado
+#[derive(Clone)]
 pub struct RouterAgent {
     llm: Arc<dyn AIClient>,
     agents: HashMap<String, Agent>,
@@ -42,7 +43,7 @@ impl RouterAgent {
 
         Self { llm, agents }
     }
-    
+
     /// Obtiene una referencia al cliente LLM
     pub fn get_llm(&self) -> Arc<dyn AIClient> {
         self.llm.clone()
@@ -79,7 +80,13 @@ impl RouterAgent {
 
         // 3. Ejecutar con el agente seleccionado (pasando historial completo y callback)
         agent
-            .run(messages, context, self.llm.clone(), mcp_executor, step_callback)
+            .run(
+                messages,
+                context,
+                self.llm.clone(),
+                mcp_executor,
+                step_callback,
+            )
             .await
     }
 

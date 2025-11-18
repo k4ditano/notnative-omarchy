@@ -284,6 +284,49 @@ pub enum MCPToolCall {
         #[serde(skip_serializing_if = "Option::is_none")]
         limit: Option<i32>,
     },
+
+    // === Recordatorios / Reminders ===
+    CreateReminder {
+        title: String,
+        due_date: String, // "2025-11-20 15:00", "hoy 18:00", "mañana", "today 18:00", "tomorrow"
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        priority: Option<String>, // "baja", "media", "alta", "urgente" / "low", "medium", "high", "urgent"
+        #[serde(skip_serializing_if = "Option::is_none")]
+        repeat: Option<String>, // "diario", "semanal", "mensual" / "daily", "weekly", "monthly"
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note_name: Option<String>, // Nota a la que vincular el recordatorio
+    },
+    ListReminders {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>, // "pending", "completed", "all" (default: "pending")
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<i32>,
+    },
+    UpdateReminder {
+        id: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        due_date: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        priority: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        repeat: Option<String>,
+    },
+    DeleteReminder {
+        id: i64,
+    },
+    SnoozeReminder {
+        id: i64,
+        minutes: i32, // Posponer por X minutos
+    },
+    CompleteReminder {
+        id: i64,
+    },
 }
 
 /// Resultado de la ejecución de una herramienta

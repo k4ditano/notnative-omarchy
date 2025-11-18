@@ -47,7 +47,7 @@ pub trait AIClient: Send + Sync {
             .await?;
         Ok(response.content.unwrap_or_default())
     }
-    
+
     /// Envía mensaje con streaming (chunks de texto en tiempo real)
     /// Devuelve un canal de tokio para recibir chunks
     async fn send_message_streaming(
@@ -203,7 +203,7 @@ impl AIClient for OpenAIClient {
 
         Ok(AIResponse::text(reply))
     }
-    
+
     async fn send_message_streaming(
         &self,
         messages: &[ChatMessage],
@@ -213,10 +213,8 @@ impl AIClient for OpenAIClient {
             Client,
             config::OpenAIConfig,
             types::{
-                ChatCompletionRequestMessage,
-                ChatCompletionRequestSystemMessageArgs,
-                ChatCompletionRequestUserMessageArgs,
-                ChatCompletionRequestAssistantMessageArgs,
+                ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+                ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
                 CreateChatCompletionRequestArgs,
             },
         };
@@ -504,7 +502,7 @@ impl AIClient for AnthropicClient {
             "Anthropic client no implementado aún. Usa OpenAI/OpenRouter."
         ))
     }
-    
+
     async fn send_message_streaming(
         &self,
         _messages: &[ChatMessage],
@@ -549,7 +547,7 @@ impl AIClient for OllamaClient {
             "Ollama client no implementado aún. Usa OpenRouter por ahora."
         ))
     }
-    
+
     async fn send_message_streaming(
         &self,
         _messages: &[ChatMessage],

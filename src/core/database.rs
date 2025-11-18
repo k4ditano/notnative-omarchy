@@ -53,6 +53,24 @@ pub struct SearchResult {
     pub similarity: Option<f32>, // Para búsqueda semántica
 }
 
+/// Embedding de un chunk de nota
+#[derive(Debug, Clone)]
+pub struct NoteEmbedding {
+    pub id: i64,
+    pub chunk_index: usize,
+    pub chunk_text: String,
+    pub embedding: Vec<f32>,
+}
+
+/// Embedding global con path de nota
+#[derive(Debug, Clone)]
+pub struct GlobalEmbedding {
+    pub note_path: String,
+    pub chunk_index: usize,
+    pub chunk_text: String,
+    pub embedding: Vec<f32>,
+}
+
 /// Query de búsqueda con filtros opcionales
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
@@ -79,7 +97,7 @@ impl std::fmt::Debug for NotesDatabase {
 
 impl NotesDatabase {
     /// Versión actual del esquema
-    const SCHEMA_VERSION: i32 = 3;
+    const SCHEMA_VERSION: i32 = 4;
 
     /// Crear o abrir base de datos en la ruta especificada
     pub fn new(path: &Path) -> Result<Self> {
@@ -115,6 +133,11 @@ impl NotesDatabase {
             conn,
             path: self.path.clone(),
         }
+    }
+
+    /// Obtiene el path de la base de datos
+    pub fn path(&self) -> &PathBuf {
+        &self.path
     }
 
     /// Asegurar que existe la tabla de versión
@@ -266,10 +289,15 @@ impl NotesDatabase {
             if current_version < 2 {
                 self.migrate_to_v2()?;
             }
-            
+
             // Migración v2 -> v3: Agregar tabla de caché de queries
             if current_version < 3 {
                 self.migrate_to_v3()?;
+            }
+
+            // Migración v3 -> v4: Agregar tabla de recordatorios
+            if current_version < 4 {
+                self.migrate_to_v4()?;
             }
         }
 
@@ -337,6 +365,42 @@ impl NotesDatabase {
             .execute("REPLACE INTO schema_version (version) VALUES (3)", [])?;
 
         println!("Migración v3 completada");
+        Ok(())
+    }
+
+    /// Migración a versión 4: Agregar tabla de recordatorios
+    fn migrate_to_v4(&mut self) -> Result<()> {
+        println!("Aplicando migración v4: Agregando tabla de recordatorios");
+
+        self.conn.execute_batch(
+            r#"
+            -- Tabla de recordatorios
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER,
+                title TEXT NOT NULL,
+                description TEXT,
+                due_date INTEGER NOT NULL,
+                priority INTEGER DEFAULT 1,
+                status INTEGER DEFAULT 0,
+                snooze_until INTEGER,
+                repeat_pattern INTEGER DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE SET NULL
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_reminders_due_date ON reminders(due_date);
+            CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+            CREATE INDEX IF NOT EXISTS idx_reminders_note_id ON reminders(note_id);
+            "#,
+        )?;
+
+        // Actualizar versión
+        self.conn
+            .execute("REPLACE INTO schema_version (version) VALUES (4)", [])?;
+
+        println!("Migración v4 completada");
         Ok(())
     }
 
@@ -1027,10 +1091,7 @@ impl NotesDatabase {
     }
 
     /// Obtener todos los embeddings de una nota específica
-    pub fn get_embeddings_by_note(
-        &self,
-        note_path: &str,
-    ) -> Result<Vec<(i64, usize, String, Vec<f32>)>> {
+    pub fn get_embeddings_by_note(&self, note_path: &str) -> Result<Vec<NoteEmbedding>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, chunk_index, chunk_text, embedding FROM note_embeddings WHERE note_path = ?1 ORDER BY chunk_index"
         )?;
@@ -1048,7 +1109,12 @@ impl NotesDatabase {
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
 
-                Ok((id, chunk_index as usize, chunk_text, embedding))
+                Ok(NoteEmbedding {
+                    id,
+                    chunk_index: chunk_index as usize,
+                    chunk_text,
+                    embedding,
+                })
             })?
             .collect::<SqliteResult<Vec<_>>>()?;
 
@@ -1056,7 +1122,7 @@ impl NotesDatabase {
     }
 
     /// Obtener todos los embeddings de todas las notas (para búsqueda semántica)
-    pub fn get_all_embeddings(&self) -> Result<Vec<(String, usize, String, Vec<f32>)>> {
+    pub fn get_all_embeddings(&self) -> Result<Vec<GlobalEmbedding>> {
         let mut stmt = self.conn.prepare(
             "SELECT note_path, chunk_index, chunk_text, embedding FROM note_embeddings ORDER BY note_path, chunk_index"
         )?;
@@ -1074,7 +1140,12 @@ impl NotesDatabase {
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
 
-                Ok((note_path, chunk_index as usize, chunk_text, embedding))
+                Ok(GlobalEmbedding {
+                    note_path,
+                    chunk_index: chunk_index as usize,
+                    chunk_text,
+                    embedding,
+                })
             })?
             .collect::<SqliteResult<Vec<_>>>()?;
 
@@ -1141,19 +1212,22 @@ impl NotesDatabase {
 
     /// Obtener embedding de query desde caché
     pub fn get_cached_query_embedding(&self, query_text: &str) -> Result<Option<Vec<f32>>> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         // Calcular hash de la query
         let mut hasher = Sha256::new();
         hasher.update(query_text.as_bytes());
         let query_hash = format!("{:x}", hasher.finalize());
 
         // Buscar en caché
-        let result: Option<(Vec<u8>, i64)> = self.conn.query_row(
-            "SELECT embedding, id FROM query_cache WHERE query_hash = ?1",
-            params![query_hash],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?;
+        let result: Option<(Vec<u8>, i64)> = self
+            .conn
+            .query_row(
+                "SELECT embedding, id FROM query_cache WHERE query_hash = ?1",
+                params![query_hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
 
         if let Some((embedding_blob, cache_id)) = result {
             // Incrementar contador de hits
@@ -1166,7 +1240,7 @@ impl NotesDatabase {
             // Deserializar embedding
             let embedding: Vec<f32> = bincode::deserialize(&embedding_blob)
                 .map_err(|e| DatabaseError::Sqlite(rusqlite::Error::InvalidQuery))?;
-            
+
             Ok(Some(embedding))
         } else {
             Ok(None)
@@ -1175,8 +1249,8 @@ impl NotesDatabase {
 
     /// Guardar embedding de query en caché
     pub fn cache_query_embedding(&self, query_text: &str, embedding: &[f32]) -> Result<()> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
         hasher.update(query_text.as_bytes());
         let query_hash = format!("{:x}", hasher.finalize());
@@ -1205,7 +1279,7 @@ impl NotesDatabase {
     /// Limpiar queries antiguas del caché
     pub fn clean_old_cache(&self, days: i64) -> Result<usize> {
         let cutoff = Utc::now().timestamp() - (days * 24 * 60 * 60);
-        
+
         let deleted = self.conn.execute(
             "DELETE FROM query_cache WHERE last_used_at < ?1",
             params![cutoff],
@@ -1216,11 +1290,9 @@ impl NotesDatabase {
 
     /// Obtener estadísticas del caché
     pub fn get_cache_stats(&self) -> Result<(usize, usize, f64)> {
-        let total_queries: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM query_cache",
-            [],
-            |row| row.get(0),
-        )?;
+        let total_queries: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM query_cache", [], |row| row.get(0))?;
 
         let total_hits: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(hits), 0) FROM query_cache",
@@ -1239,17 +1311,20 @@ impl NotesDatabase {
 
     /// Obtener expansión de query desde caché
     pub fn get_cached_query_expansion(&self, query_text: &str) -> Result<Option<String>> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
         hasher.update(format!("expansion:{}", query_text).as_bytes());
         let query_hash = format!("{:x}", hasher.finalize());
 
-        let result: Option<String> = self.conn.query_row(
-            "SELECT query_text FROM query_cache WHERE query_hash = ?1 AND embedding IS NULL",
-            params![query_hash],
-            |row| row.get(0),
-        ).optional()?;
+        let result: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT query_text FROM query_cache WHERE query_hash = ?1 AND embedding IS NULL",
+                params![query_hash],
+                |row| row.get(0),
+            )
+            .optional()?;
 
         if result.is_some() {
             // Actualizar last_used
@@ -1265,8 +1340,8 @@ impl NotesDatabase {
 
     /// Guardar expansión de query en caché
     pub fn cache_query_expansion(&self, original_query: &str, expanded_query: &str) -> Result<()> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
         hasher.update(format!("expansion:{}", original_query).as_bytes());
         let query_hash = format!("{:x}", hasher.finalize());
@@ -1303,10 +1378,12 @@ impl NotesDatabase {
 
         for (id, name, path) in notes {
             // Eliminar de tabla principal
-            self.conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM notes WHERE id = ?1", params![id])?;
 
             // Eliminar de FTS
-            self.conn.execute("DELETE FROM notes_fts WHERE rowid = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM notes_fts WHERE rowid = ?1", params![id])?;
 
             // Eliminar embeddings asociados
             self.conn.execute(
@@ -1314,11 +1391,17 @@ impl NotesDatabase {
                 params![path],
             )?;
 
-            println!("🗑️ Nota '{}' eliminada de BD (carpeta: {})", name, folder_path);
+            println!(
+                "🗑️ Nota '{}' eliminada de BD (carpeta: {})",
+                name, folder_path
+            );
         }
 
         if count > 0 {
-            println!("🗑️ Total de {} notas eliminadas de la carpeta '{}'", count, folder_path);
+            println!(
+                "🗑️ Total de {} notas eliminadas de la carpeta '{}'",
+                count, folder_path
+            );
         }
 
         Ok(count)
@@ -1467,10 +1550,10 @@ mod tests {
         // Verificar que se insertaron correctamente
         let embeddings = db.get_embeddings_by_note("/path/to/note.md").unwrap();
         assert_eq!(embeddings.len(), 2);
-        assert_eq!(embeddings[0].1, 0); // chunk_index
-        assert_eq!(embeddings[0].2, "Este es el primer chunk de texto");
-        assert_eq!(embeddings[0].3.len(), 1024); // dimensión del embedding
-        assert_eq!(embeddings[1].1, 1);
+        assert_eq!(embeddings[0].chunk_index, 0); // chunk_index
+        assert_eq!(embeddings[0].chunk_text, "Este es el primer chunk de texto");
+        assert_eq!(embeddings[0].embedding.len(), 1024); // dimensión del embedding
+        assert_eq!(embeddings[1].chunk_index, 1);
 
         // Verificar timestamp
         let timestamp = db.get_embedding_timestamp("/path/to/note.md").unwrap();
@@ -1516,8 +1599,8 @@ mod tests {
         // Verificar que se actualizó y no se duplicó
         let embeddings = db.get_embeddings_by_note("/path/to/note.md").unwrap();
         assert_eq!(embeddings.len(), 1);
-        assert_eq!(embeddings[0].2, "Texto actualizado");
-        assert_eq!(embeddings[0].3[0], 0.9); // Verificar que el embedding cambió
+        assert_eq!(embeddings[0].chunk_text, "Texto actualizado");
+        assert_eq!(embeddings[0].embedding[0], 0.9); // Verificar que el embedding cambió
 
         // Cleanup
         std::fs::remove_file(db_path).ok();

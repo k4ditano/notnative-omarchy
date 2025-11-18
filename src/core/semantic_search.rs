@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use super::database::NotesDatabase;
 use super::embedding_client::EmbeddingClient;
-use crate::ai_client::AIClient;
 use crate::ai_chat::{ChatMessage, MessageRole};
+use crate::ai_client::AIClient;
 
 /// Resultado de búsqueda semántica
 #[derive(Debug, Clone)]
@@ -86,26 +86,30 @@ pub struct SemanticSearch {
 impl SemanticSearch {
     /// Crea un nuevo motor de búsqueda
     pub fn new(client: EmbeddingClient, db: NotesDatabase) -> Self {
-        Self { 
-            client, 
+        Self {
+            client,
             db,
             ai_client: None,
         }
     }
-    
+
     /// Crea motor con capacidad de query expansion
-    pub fn with_ai(client: EmbeddingClient, db: NotesDatabase, ai_client: Arc<dyn AIClient>) -> Self {
+    pub fn with_ai(
+        client: EmbeddingClient,
+        db: NotesDatabase,
+        ai_client: Arc<dyn AIClient>,
+    ) -> Self {
         Self {
             client,
             db,
             ai_client: Some(ai_client),
         }
     }
-    
+
     /// Detecta si la query es una pregunta que necesita expansión
     fn is_question(query: &str) -> bool {
         let query_lower = query.to_lowercase();
-        
+
         // Detectar palabras interrogativas en español
         query_lower.contains('¿') ||
         query_lower.contains('?') ||
@@ -130,7 +134,7 @@ impl SemanticSearch {
         query_lower.contains("fecha") ||
         query_lower.contains("viaje")
     }
-    
+
     /// Expande una query usando LLM para obtener mejores términos de búsqueda
     async fn expand_query(&self, query: &str) -> Result<String> {
         // Si no hay AI client, retornar query original
@@ -138,18 +142,18 @@ impl SemanticSearch {
             Some(client) => client,
             None => return Ok(query.to_string()),
         };
-        
+
         eprintln!("🔄 Expandiendo query: '{}'", query);
-        
+
         // Primero verificar caché de expansiones
         if let Ok(Some(cached)) = self.db.get_cached_query_expansion(query) {
             eprintln!("✅ Expansión en caché: '{}'", cached);
             return Ok(cached);
         }
-        
+
         // Prompt optimizado para expansión de queries
         let expansion_prompt = format!(
-r#"Convierte esta pregunta en palabras clave para búsqueda semántica.
+            r#"Convierte esta pregunta en palabras clave para búsqueda semántica.
 
 Reglas:
 - Extrae solo conceptos clave, sinónimos y términos relacionados
@@ -160,17 +164,17 @@ Reglas:
 
 Pregunta: "{}"
 
-Palabras clave:"#, 
+Palabras clave:"#,
             query
         );
-        
+
         let messages = vec![ChatMessage {
             role: MessageRole::User,
             content: expansion_prompt,
             timestamp: chrono::Utc::now(),
             context_notes: Vec::new(),
         }];
-        
+
         match ai_client.send_message(&messages, "").await {
             Ok(expanded) => {
                 let cleaned = expanded
@@ -180,14 +184,14 @@ Palabras clave:"#,
                     .unwrap_or(&expanded)
                     .trim()
                     .to_string();
-                
+
                 eprintln!("✨ Query expandida: '{}' → '{}'", query, cleaned);
-                
+
                 // Guardar en caché
                 if let Err(e) = self.db.cache_query_expansion(query, &cleaned) {
                     eprintln!("⚠️ Error guardando expansión en caché: {}", e);
                 }
-                
+
                 Ok(cleaned)
             }
             Err(e) => {
@@ -205,9 +209,9 @@ Palabras clave:"#,
         } else {
             query.to_string()
         };
-        
+
         eprintln!("🔍 Buscando con query: '{}'", search_query);
-        
+
         // 2. Intentar obtener embedding desde caché
         let query_embedding = match self.db.get_cached_query_embedding(&search_query) {
             Ok(Some(cached_embedding)) => {
@@ -216,19 +220,19 @@ Palabras clave:"#,
             }
             _ => {
                 eprintln!("❌ Cache miss para query: '{}'", search_query);
-                
+
                 // Generar embedding usando API
                 let embedding = self
                     .client
                     .embed_text(&search_query)
                     .await
                     .context("Error generando embedding de búsqueda")?;
-                
+
                 // Guardar en caché para futuras búsquedas
                 if let Err(e) = self.db.cache_query_embedding(&search_query, &embedding) {
                     eprintln!("⚠️ Error guardando en caché: {}", e);
                 }
-                
+
                 embedding
             }
         };
@@ -246,42 +250,45 @@ Palabras clave:"#,
         // 4. Calcular similitud con cada chunk
         let mut results: Vec<SearchResult> = all_embeddings
             .into_iter()
-            .map(|(note_path, chunk_index, chunk_text, embedding)| {
-                let similarity = cosine_similarity(&query_embedding, &embedding);
+            .map(|embedding_data| {
+                let similarity = cosine_similarity(&query_embedding, &embedding_data.embedding);
 
                 eprintln!(
                     "🔍 Similitud: {:.3} - {} (chunk {})",
-                    similarity, note_path, chunk_index
+                    similarity, embedding_data.note_path, embedding_data.chunk_index
                 );
 
-                (note_path, chunk_index, chunk_text, similarity)
+                (embedding_data, similarity)
             })
             // 5. Filtrar por similitud mínima
-            .filter(|(note_path, _, _, similarity)| {
+            .filter(|(embedding_data, similarity)| {
                 let passed = *similarity >= options.min_similarity;
                 if !passed {
                     eprintln!(
                         "❌ Filtrado por baja similitud ({:.3} < {:.3}): {}",
-                        similarity, options.min_similarity, note_path
+                        similarity, options.min_similarity, embedding_data.note_path
                     );
                 }
                 passed
             })
             // 6. Filtrar por carpeta si se especificó
-            .filter(|(note_path, _, _, _)| {
+            .filter(|(embedding_data, _)| {
                 if let Some(ref folder) = options.folder_filter {
-                    note_path.starts_with(folder)
+                    embedding_data.note_path.starts_with(folder)
                 } else {
                     true
                 }
             })
-            .map(|(note_path, chunk_index, chunk_text, similarity)| {
-                let snippet = SearchResult::create_snippet(&chunk_text, options.snippet_length);
+            .map(|(embedding_data, similarity)| {
+                let snippet = SearchResult::create_snippet(
+                    &embedding_data.chunk_text,
+                    options.snippet_length,
+                );
 
                 SearchResult {
-                    note_path: PathBuf::from(note_path),
-                    chunk_index,
-                    chunk_text,
+                    note_path: PathBuf::from(embedding_data.note_path),
+                    chunk_index: embedding_data.chunk_index,
+                    chunk_text: embedding_data.chunk_text,
                     similarity,
                     snippet,
                 }
@@ -318,7 +325,7 @@ Palabras clave:"#,
         }
 
         // Usar el primer chunk como representación de la nota
-        let (_, _, query_text, query_embedding) = &note_embeddings[0];
+        let query_embedding = &note_embeddings[0].embedding;
 
         // Obtener todos los embeddings
         let all_embeddings = self.db.get_all_embeddings()?;
@@ -327,27 +334,30 @@ Palabras clave:"#,
         let mut results: Vec<SearchResult> = all_embeddings
             .into_iter()
             // Excluir la nota misma
-            .filter(|(path, _, _, _)| path != note_path)
-            .map(|(path, chunk_index, chunk_text, embedding)| {
-                let similarity = cosine_similarity(&query_embedding, &embedding);
+            .filter(|embedding_data| embedding_data.note_path != note_path)
+            .map(|embedding_data| {
+                let similarity = cosine_similarity(query_embedding, &embedding_data.embedding);
 
-                (path, chunk_index, chunk_text, similarity)
+                (embedding_data, similarity)
             })
-            .filter(|(_, _, _, similarity)| *similarity >= options.min_similarity)
-            .filter(|(path, _, _, _)| {
+            .filter(|(_, similarity)| *similarity >= options.min_similarity)
+            .filter(|(embedding_data, _)| {
                 if let Some(ref folder) = options.folder_filter {
-                    path.starts_with(folder)
+                    embedding_data.note_path.starts_with(folder)
                 } else {
                     true
                 }
             })
-            .map(|(path, chunk_index, chunk_text, similarity)| {
-                let snippet = SearchResult::create_snippet(&chunk_text, options.snippet_length);
+            .map(|(embedding_data, similarity)| {
+                let snippet = SearchResult::create_snippet(
+                    &embedding_data.chunk_text,
+                    options.snippet_length,
+                );
 
                 SearchResult {
-                    note_path: PathBuf::from(path),
-                    chunk_index,
-                    chunk_text,
+                    note_path: PathBuf::from(embedding_data.note_path),
+                    chunk_index: embedding_data.chunk_index,
+                    chunk_text: embedding_data.chunk_text,
                     similarity,
                     snippet,
                 }

@@ -14,7 +14,7 @@ pub enum ExecutorType {
 }
 
 /// Agente especializado en un tipo de tarea
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Agent {
     pub name: String,
     pub description: String,
@@ -50,10 +50,8 @@ impl Agent {
                 let steps = executor.run(messages, context, step_callback).await?;
 
                 // Extraer la respuesta final del último paso
-                if let Some(last_step) = steps.last() {
-                    if let crate::ai::executors::react::ReActStep::Answer(answer) = last_step {
-                        return Ok(answer.clone());
-                    }
+                if let Some(crate::ai::executors::react::ReActStep::Answer(answer)) = steps.last() {
+                    return Ok(answer.clone());
                 }
 
                 // Si no hay respuesta final, construir una desde los pasos

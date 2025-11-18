@@ -448,7 +448,7 @@ impl I18n {
                 "All conversation history has been deleted",
             ),
         );
-        
+
         // Chat AI - Modo Agente
         translations.insert("chat_mode_agent", ("Modo: Agente", "Mode: Agent"));
         translations.insert("chat_mode_normal", ("Modo: Chat", "Mode: Chat"));
@@ -461,9 +461,12 @@ impl I18n {
         );
         translations.insert("chat_agent_thinking", ("💭 Pensamiento", "💭 Thought"));
         translations.insert("chat_agent_action", ("🔧 Acción", "🔧 Action"));
-        translations.insert("chat_agent_observation", ("👁️ Observación", "👁️ Observation"));
+        translations.insert(
+            "chat_agent_observation",
+            ("👁️ Observación", "👁️ Observation"),
+        );
         translations.insert("chat_agent_answer", ("✅ Respuesta", "✅ Answer"));
-        
+
         translations.insert(
             "music_player_title",
             ("Reproductor de Música", "Music Player"),
@@ -592,6 +595,128 @@ impl I18n {
         translations.insert(
             "mcp_folders_found",
             ("✓ {} carpetas encontradas", "✓ {} folders found"),
+        );
+
+        // === RECORDATORIOS / REMINDERS ===
+        translations.insert("reminders_title", ("Recordatorios", "Reminders"));
+        translations.insert("reminders_new", ("Nuevo recordatorio", "New reminder"));
+        translations.insert("reminders_pending", ("Pendientes", "Pending"));
+        translations.insert("reminders_completed", ("Completados", "Completed"));
+        translations.insert("reminders_all", ("Todos", "All"));
+        translations.insert("reminder_complete", ("Completar", "Complete"));
+        translations.insert("reminder_snooze", ("Posponer", "Snooze"));
+        translations.insert("reminder_edit", ("Editar", "Edit"));
+        translations.insert("reminder_delete", ("Eliminar", "Delete"));
+        translations.insert("reminders_empty", ("No hay recordatorios", "No reminders"));
+        translations.insert("reminder_priority_low", ("Baja", "Low"));
+        translations.insert("reminder_priority_medium", ("Media", "Medium"));
+        translations.insert("reminder_priority_high", ("Alta", "High"));
+        translations.insert("reminder_priority_urgent", ("Urgente", "Urgent"));
+        translations.insert("reminder_snooze_5min", ("5 minutos", "5 minutes"));
+        translations.insert("reminder_snooze_15min", ("15 minutos", "15 minutes"));
+        translations.insert("reminder_snooze_1hour", ("1 hora", "1 hour"));
+        translations.insert("reminder_snooze_tomorrow", ("Mañana", "Tomorrow"));
+        translations.insert(
+            "reminder_notification_title",
+            ("🔔 Recordatorio", "🔔 Reminder"),
+        );
+        translations.insert(
+            "reminder_create_title",
+            ("Crear recordatorio", "Create reminder"),
+        );
+        translations.insert("reminder_title_label", ("Título", "Title"));
+        translations.insert("reminder_description_label", ("Descripción", "Description"));
+        translations.insert("reminder_date_label", ("Fecha y hora", "Date and time"));
+        translations.insert("reminder_priority_label", ("Prioridad", "Priority"));
+        translations.insert(
+            "reminder_linked_note_label",
+            ("Nota vinculada", "Linked note"),
+        );
+        translations.insert("reminder_repeat_label", ("Repetir", "Repeat"));
+        translations.insert("reminder_repeat_none", ("No repetir", "Don't repeat"));
+        translations.insert("reminder_repeat_daily", ("Diariamente", "Daily"));
+        translations.insert("reminder_repeat_weekly", ("Semanalmente", "Weekly"));
+        translations.insert("reminder_repeat_monthly", ("Mensualmente", "Monthly"));
+        translations.insert("no_reminders", ("No hay recordatorios", "No reminders"));
+        translations.insert("reminders_count", ("{} pendientes", "{} pending"));
+        translations.insert("reminder_overdue", ("Vencido", "Overdue"));
+        translations.insert("reminder_today", ("Hoy", "Today"));
+        translations.insert("reminder_tomorrow", ("Mañana", "Tomorrow"));
+        translations.insert(
+            "reminder_created",
+            ("Recordatorio creado", "Reminder created"),
+        );
+        translations.insert(
+            "reminder_updated",
+            ("Recordatorio actualizado", "Reminder updated"),
+        );
+        translations.insert(
+            "reminder_deleted",
+            ("Recordatorio eliminado", "Reminder deleted"),
+        );
+        translations.insert(
+            "reminder_completed_msg",
+            ("Recordatorio completado", "Reminder completed"),
+        );
+        translations.insert(
+            "reminder_snoozed",
+            ("Recordatorio pospuesto", "Reminder snoozed"),
+        );
+        translations.insert(
+            "reminder_tooltip",
+            ("Recordatorios (Alt+R)", "Reminders (Alt+R)"),
+        );
+
+        // MCP Tools para recordatorios
+        translations.insert(
+            "mcp_create_reminder_desc",
+            (
+                "Crea un nuevo recordatorio con fecha, hora y prioridad",
+                "Create a new reminder with date, time and priority",
+            ),
+        );
+        translations.insert(
+            "mcp_list_reminders_desc",
+            (
+                "Lista todos los recordatorios o filtra por estado",
+                "List all reminders or filter by status",
+            ),
+        );
+        translations.insert(
+            "mcp_update_reminder_desc",
+            (
+                "Actualiza un recordatorio existente",
+                "Update an existing reminder",
+            ),
+        );
+        translations.insert(
+            "mcp_delete_reminder_desc",
+            ("Elimina un recordatorio", "Delete a reminder"),
+        );
+        translations.insert(
+            "mcp_snooze_reminder_desc",
+            (
+                "Pospone un recordatorio por un tiempo específico",
+                "Snooze a reminder for a specific time",
+            ),
+        );
+        translations.insert(
+            "mcp_complete_reminder_desc",
+            (
+                "Marca un recordatorio como completado",
+                "Mark a reminder as completed",
+            ),
+        );
+        translations.insert(
+            "mcp_reminder_title_desc",
+            ("Título del recordatorio", "Reminder title"),
+        );
+        translations.insert(
+            "mcp_reminder_date_desc",
+            (
+                "Fecha y hora del recordatorio (ej: '2025-11-20 15:00', 'hoy 18:00', 'mañana')",
+                "Reminder date and time (e.g: '2025-11-20 15:00', 'today 18:00', 'tomorrow')",
+            ),
         );
 
         Self {

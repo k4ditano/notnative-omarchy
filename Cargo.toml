@@ -46,10 +46,14 @@ ctrlc = "3.4"
 # System tray (StatusNotifierItem para Wayland/X11)
 ksni = "0.2"
 
+# Desktop notifications (opcional, compilar con --features notify)
+notify-rust = { version = "4", optional = true }
+
 [features]
 default = ["sqlite-bundled"]
 sqlite-bundled = ["rusqlite/bundled"]
 sqlite-system = []
+notify = ["notify-rust"]
 
 [build-dependencies]
 pkg-config = "0.3"

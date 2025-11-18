@@ -255,7 +255,7 @@ impl EmbeddingIndexer {
         let all_embeddings = db.get_all_embeddings()?;
         let unique_notes: std::collections::HashSet<String> = all_embeddings
             .into_iter()
-            .map(|(note_path, _, _, _)| note_path)
+            .map(|embedding_data| embedding_data.note_path)
             .collect();
 
         // Eliminar embeddings de cada nota

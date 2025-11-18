@@ -41,7 +41,7 @@ impl ReActExecutor {
 
     /// Ejecuta una tarea siguiendo el patrón ReAct
     /// Devuelve todos los pasos ejecutados (pensamientos, acciones, observaciones y respuesta final)
-    /// 
+    ///
     /// `step_callback`: función opcional que se llama con cada step generado (para UI en tiempo real)
     pub async fn run<F>(
         &self,
@@ -114,7 +114,7 @@ impl ReActExecutor {
                 );
                 let answer_step = ReActStep::Answer(final_message);
                 steps.push(answer_step.clone());
-                step_callback(&answer_step);  // ✨ Notificar a la UI
+                step_callback(&answer_step); // ✨ Notificar a la UI
                 return Ok(steps);
             }
 
@@ -133,8 +133,8 @@ impl ReActExecutor {
                         println!("💭 Thought: {}", content);
                         let thought_step = ReActStep::Thought(content.clone());
                         steps.push(thought_step.clone());
-                        step_callback(&thought_step);  // ✨ Notificar a la UI
-                        
+                        step_callback(&thought_step); // ✨ Notificar a la UI
+
                         // Pausa para que GTK actualice la UI
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -270,8 +270,8 @@ impl ReActExecutor {
                     println!("🔧 Action: {:?}", tool_call);
                     let action_step = ReActStep::Action(tool_call.clone());
                     steps.push(action_step.clone());
-                    step_callback(&action_step);  // ✨ Notificar a la UI
-                    
+                    step_callback(&action_step); // ✨ Notificar a la UI
+
                     // Pausa para que GTK actualice la UI
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -286,8 +286,8 @@ impl ReActExecutor {
                     println!("👁️ Observation: {}", observation);
                     let obs_step = ReActStep::Observation(observation.clone());
                     steps.push(obs_step.clone());
-                    step_callback(&obs_step);  // ✨ Notificar a la UI
-                    
+                    step_callback(&obs_step); // ✨ Notificar a la UI
+
                     // Pausa para que GTK actualice la UI
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -305,9 +305,23 @@ impl ReActExecutor {
 
                     // Agregar observación con instrucción explícita
                     if was_successful {
+                        // Verificar si es un resultado de semantic_search para dar instrucciones especiales
+                        let is_semantic_search =
+                            matches!(tool_call, MCPToolCall::SemanticSearch { .. });
+
+                        let instruction = if is_semantic_search {
+                            "✓ Búsqueda completada. AHORA debes:\n\
+                            1. Leer las 2-3 notas más relevantes usando read_note\n\
+                            2. Analizar su contenido\n\
+                            3. Responder la pregunta del usuario con la información encontrada\n\
+                            NO te limites a listar las notas - el usuario quiere la RESPUESTA a su pregunta."
+                        } else {
+                            "✓ Acción completada. Si la tarea requiere más pasos, ejecuta la SIGUIENTE herramienta necesaria. Si ya terminaste, responde al usuario confirmando qué se hizo."
+                        };
+
                         messages.push(ChatMessage {
                             role: MessageRole::System,
-                            content: format!("Resultado:\n{}\n\n✓ Acción completada. Si la tarea requiere más pasos, ejecuta la SIGUIENTE herramienta necesaria. Si ya terminaste, responde al usuario confirmando qué se hizo.", observation),
+                            content: format!("Resultado:\n{}\n\n{}", observation, instruction),
                             timestamp: chrono::Utc::now(),
                             context_notes: Vec::new(),
                         });
@@ -334,14 +348,57 @@ impl ReActExecutor {
                 continue;
             }
 
-            // 4. Si no hay tool calls y hay contenido, es la respuesta final
+            // 4. Si no hay tool calls y hay contenido, verificar si es respuesta final o error
             if let Some(content) = response.content {
                 if !content.trim().is_empty() {
-                    println!("✅ Answer: {}", content);
-                    let answer_step = ReActStep::Answer(content.clone());
-                    steps.push(answer_step.clone());
-                    step_callback(&answer_step);  // ✨ Notificar a la UI
-                    return Ok(steps);
+                    // Detectar si el LLM escribió XML de function_call en lugar de usar tool calls
+                    // Incluye variantes: <function_call>, <xai:function_call>, etc.
+                    if content.contains("<function_call")
+                        || content.contains("</function_call>")
+                        || content.contains("<xai:function_call")
+                        || content.contains("</xai:function_call>")
+                    {
+                        println!(
+                            "⚠️ El modelo escribió XML manualmente en lugar de usar tool calls"
+                        );
+
+                        // Agregar mensaje correctivo
+                        messages.push(ChatMessage {
+                            role: MessageRole::System,
+                            content: "ERROR: NO escribas XML de ningún tipo (<function_call>, <xai:function_call>, etc.). El sistema NO soporta XML manual. Debes usar ÚNICAMENTE el mecanismo nativo JSON de tool calling. Si no puedes hacer tool calls, simplemente responde la pregunta del usuario con la información que YA OBTUVISTE de las herramientas anteriores. NO repitas llamadas a herramientas en formato XML.".to_string(),
+                            timestamp: chrono::Utc::now(),
+                            context_notes: Vec::new(),
+                        });
+
+                        continue; // Reintentar en la siguiente iteración
+                    }
+
+                    // Detectar y limpiar bloques <think>
+                    let cleaned_content = if content.contains("<think>") {
+                        // Extraer solo el contenido después del </think>
+                        if let Some(pos) = content.find("</think>") {
+                            let after_think = &content[pos + 8..]; // 8 = len("</think>")
+                            after_think.trim().to_string()
+                        } else {
+                            // Si hay <think> pero no </think>, remover desde <think> hasta el final del párrafo
+                            if let Some(pos) = content.find("<think>") {
+                                content[..pos].trim().to_string()
+                            } else {
+                                content.clone()
+                            }
+                        }
+                    } else {
+                        content.clone()
+                    };
+
+                    // Si después de limpiar queda contenido válido, es la respuesta final
+                    if !cleaned_content.is_empty() {
+                        println!("✅ Answer: {}", cleaned_content);
+                        let answer_step = ReActStep::Answer(cleaned_content.clone());
+                        steps.push(answer_step.clone());
+                        step_callback(&answer_step); // ✨ Notificar a la UI
+                        return Ok(steps);
+                    }
                 }
             }
 
@@ -388,7 +445,7 @@ impl ReActExecutor {
 
         let answer_step = ReActStep::Answer(final_message);
         steps.push(answer_step.clone());
-        step_callback(&answer_step);  // ✨ Notificar a la UI
+        step_callback(&answer_step); // ✨ Notificar a la UI
         Ok(steps)
     }
 
@@ -413,14 +470,31 @@ impl ReActExecutor {
         format!(
             r##"Eres un asistente para gestionar notas en NotNative.
 
-REGLA: Ejecuta herramientas directamente, sin explicaciones previas. Puedes incluir texto junto con el tool call para explicar.
+REGLAS CRÍTICAS:
+1. Ejecuta herramientas inmediatamente cuando el usuario pide algo, SIN explicaciones previas
+2. NO uses bloques <think>, <function_call>, <xai:function_call> ni ningún tipo de XML
+3. Usa ÚNICAMENTE el mecanismo nativo JSON de tool calling del sistema
+4. Cuando el usuario hace una PREGUNTA (ej: "¿cuándo...?", "¿qué...?", "¿tengo información sobre...?"):
+   - Usa semantic_search para encontrar notas relevantes
+   - Lee las 2-3 notas más relevantes con read_note
+   - Analiza el contenido y RESPONDE la pregunta con la información encontrada
+5. Cuando el usuario pide "busca X" o "muéstrame X":
+   - Ejecuta semantic_search
+   - Muestra la lista de resultados encontrados
+6. NUNCA inventes información - usa SOLO lo que está en las notas
+7. Si no encuentras la información, dilo claramente
+
+FLUJO TÍPICO:
+- Usuario pregunta "¿cuándo es X?" → semantic_search → read_note (top 2-3) → Responder con la info encontrada
+- Usuario dice "busca X" → semantic_search → Listar resultados
+- Usuario dice "crea nota X" → create_note → Confirmar
 
 IMPORTANTE:
-- Después de ejecutar una herramienta con éxito, responde al usuario confirmando qué se hizo
-- Si una herramienta falla (ej: nota no encontrada), verifica el nombre exacto e intenta con el correcto
+- NO te limites a listar notas cuando el usuario hace una pregunta - RESPONDE la pregunta
+- Después de read_note, analiza el contenido y extrae la información solicitada
+- Si una herramienta falla, ajusta e intenta de nuevo (no repitas el mismo error)
 - NO ejecutes la misma herramienta con los mismos parámetros más de una vez
-- Si obtienes un error, analiza el mensaje y ajusta tu siguiente acción (no repitas el error)
-- NO inventes resultados ni respondas sin antes ejecutar las herramientas necesarias
+- Responde de forma DIRECTA y CONCISA, sin razonamientos internos visibles
 
 {}
 

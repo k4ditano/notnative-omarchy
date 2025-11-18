@@ -847,6 +847,108 @@ pub fn get_all_tool_definitions() -> Vec<MCPTool> {
                 "properties": {}
             }),
         },
+        // ==================== RECORDATORIOS ====================
+        MCPTool {
+            name: "CreateReminder".to_string(),
+            description: "Crea un nuevo recordatorio. Puede vincularse a una nota específica. Formatos de fecha: 'YYYY-MM-DD HH:MM' o 'hoy 18:00', 'mañana 10:00'. Prioridades: 'baja', 'media', 'alta', 'urgente'. Repetición: 'diario', 'semanal', 'mensual'.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Título del recordatorio"
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Fecha y hora de vencimiento. Formato: 'YYYY-MM-DD HH:MM' (ej: '2025-11-20 15:00')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Descripción detallada del recordatorio (opcional)"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["baja", "media", "alta", "urgente", "low", "medium", "high", "urgent"],
+                        "description": "Prioridad del recordatorio (default: 'media')"
+                    },
+                    "repeat": {
+                        "type": "string",
+                        "enum": ["diario", "semanal", "mensual", "daily", "weekly", "monthly"],
+                        "description": "Patrón de repetición (opcional)"
+                    },
+                    "note_name": {
+                        "type": "string",
+                        "description": "Nombre de la nota a la que vincular el recordatorio (opcional pero recomendado para evitar duplicados)"
+                    }
+                },
+                "required": ["title", "due_date"]
+            }),
+        },
+        MCPTool {
+            name: "ListReminders".to_string(),
+            description: "Lista todos los recordatorios o filtra por estado. Por defecto muestra solo recordatorios pendientes.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "completed", "snoozed", "all", "pendiente", "completado", "pospuesto"],
+                        "description": "Estado de los recordatorios a listar (default: 'pending')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Número máximo de resultados (opcional)"
+                    }
+                },
+                "required": []
+            }),
+        },
+        MCPTool {
+            name: "CompleteReminder".to_string(),
+            description: "Marca un recordatorio como completado.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "ID del recordatorio a completar"
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
+        MCPTool {
+            name: "SnoozeReminder".to_string(),
+            description: "Pospone un recordatorio por X minutos.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "ID del recordatorio a posponer"
+                    },
+                    "minutes": {
+                        "type": "integer",
+                        "description": "Minutos a posponer (ej: 15, 30, 60)"
+                    }
+                },
+                "required": ["id", "minutes"]
+            }),
+        },
+        MCPTool {
+            name: "DeleteReminder".to_string(),
+            description: "Elimina permanentemente un recordatorio.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "ID del recordatorio a eliminar"
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
     ]
 }
 
