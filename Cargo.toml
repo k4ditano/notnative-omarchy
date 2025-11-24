@@ -8,7 +8,7 @@ relm4 = { version = "0.10", features = ["macros"] }
 ashpd = { version = "0.10", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 ropey = "1.6"
-pulldown-cmark = { version = "0.10", default-features = false }
+pulldown-cmark = { version = "0.10", default-features = false, features = ["html"] }
 anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +29,7 @@ yt-transcript-rs = "0.1.8"
 libmpv2 = "4.0"
 rustypipe = "0.11"
 libc = "0.2"
+scraper = "0.19"
 
 # AI Chat dependencies
 async-openai = "0.24"

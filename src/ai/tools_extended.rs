@@ -69,7 +69,10 @@ impl Tool for UpdateNote {
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
 
-                Ok(format!("Note '{}' updated successfully", args.name))
+                Ok(format!(
+                    "Note '{}' updated successfully. Link: [{}]( {})",
+                    args.name, args.name, args.name
+                ))
             } else {
                 Err(anyhow::anyhow!("Note '{}' not found", args.name))
             }
@@ -151,7 +154,10 @@ impl Tool for AppendToNote {
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
 
-                Ok(format!("Content appended to note '{}'", args.name))
+                Ok(format!(
+                    "Content appended to note '{}'. Link: [{}]( {})",
+                    args.name, args.name, args.name
+                ))
             } else {
                 Err(anyhow::anyhow!("Note '{}' not found", args.name))
             }

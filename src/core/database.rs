@@ -775,6 +775,10 @@ impl NotesDatabase {
                 JOIN note_tags ON notes.id = note_tags.note_id
                 JOIN tags ON note_tags.tag_id = tags.id
                 WHERE LOWER(tags.name) = ?1
+                  AND (notes.folder IS NULL OR (
+                      notes.folder NOT LIKE '.trash%' AND 
+                      notes.folder NOT LIKE '.history%'
+                  ))
                 ORDER BY notes.name
                 LIMIT 50
                 "#,
@@ -817,6 +821,10 @@ impl NotesDatabase {
             FROM notes_fts
             JOIN notes ON notes_fts.rowid = notes.id
             WHERE notes_fts MATCH ?1
+              AND (notes.folder IS NULL OR (
+                  notes.folder NOT LIKE '.trash%' AND 
+                  notes.folder NOT LIKE '.history%'
+              ))
             ORDER BY rank
             LIMIT 50
             "#,

@@ -20,6 +20,8 @@ pub mod tools_utility;
 
 pub mod tools_reminders;
 
+pub mod tools_web;
+
 pub use agent::{Agent, ExecutorType};
 pub use executors::react::{ReActExecutor, ReActStep};
 pub use router::RouterAgent;

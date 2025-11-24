@@ -124,7 +124,7 @@ Sigue estas reglas de trabajo:
    En su lugar, da una respuesta final confirmando la creación de la nota.
 5. Si la nota ya existe o se ha creado, utiliza `update_note` o `append_to_note` solo si el contenido necesita cambios.
 6. **Nunca ejecutes más de una herramienta por iteración.**
-7. Cuando completes la acción necesaria (creación o modificación exitosa), **responde al usuario con un resumen de lo que hiciste** y detén el flujo.
+7. Cuando completes la acción necesaria (creación o modificación exitosa), **responde al usuario con un resumen de lo que hiciste e INCLUYE SIEMPRE un enlace a la nota modificada o creada usando el formato `[Nombre de la nota](Nombre de la nota)`** y detén el flujo.
 8. No intentes crear de nuevo la misma nota si ya existe o ya fue confirmada.
 9. Si ocurre un error con la herramienta, intenta una sola vez un método alternativo (por ejemplo, `update_note` si `create_note` falla).
 10. Si no puedes continuar o no hay suficiente información, explica claramente qué falta en tu respuesta y termina.
@@ -192,7 +192,7 @@ Este agente debe siempre producir UNA sola nota final por tarea, y nunca entrar 
         Self {
             name: "MultiStepAgent".to_string(),
             description: "Ejecuta tareas complejas que requieren múltiples pasos y herramientas".to_string(),
-            instructions: "Eres un planificador experto. Descompones tareas complejas en pasos, ejecutas herramientas en secuencia y sintetizas resultados. PROHIBIDO repetir acciones completadas. Espera el resultado de cada herramienta antes de continuar. Al finalizar, responde con una única respuesta final clara en Markdown.".to_string(),
+            instructions: "Eres un planificador experto. Descompones tareas complejas en pasos, ejecutas herramientas en secuencia y sintetizas resultados. PROHIBIDO repetir acciones completadas. Espera el resultado de cada herramienta antes de continuar. Al finalizar, responde con una única respuesta final clara en Markdown. Si has creado o modificado una nota, incluye un enlace a ella en tu respuesta final.".to_string(),
             allowed_tools: all_tools,
             executor_type: ExecutorType::ReAct,
         }

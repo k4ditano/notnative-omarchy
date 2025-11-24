@@ -414,6 +414,154 @@ impl RenameNote {
     }
 }
 
+// ==================== BATCH RENAME NOTES ====================
+
+#[derive(Deserialize)]
+pub struct RenamePair {
+    pub old_name: String,
+    pub new_name: String,
+}
+
+#[derive(Deserialize)]
+pub struct BatchRenameNotesArgs {
+    pub renames: Vec<RenamePair>,
+}
+
+pub struct BatchRenameNotes {
+    pub db_path: PathBuf,
+}
+
+impl Tool for BatchRenameNotes {
+    const NAME: &'static str = "batch_rename_notes";
+
+    type Args = BatchRenameNotesArgs;
+    type Output = String;
+    type Error = ToolError;
+
+    async fn definition(&self, _prompt: String) -> rig::completion::ToolDefinition {
+        rig::completion::ToolDefinition {
+            name: "batch_rename_notes".to_string(),
+            description: "Rename multiple notes at once.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "renames": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_name": { "type": "string", "description": "Current name of the note" },
+                                "new_name": { "type": "string", "description": "New name for the note" }
+                            },
+                            "required": ["old_name", "new_name"]
+                        },
+                        "description": "List of rename pairs"
+                    }
+                },
+                "required": ["renames"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        println!(
+            "🔧 [BatchRenameNotes] Renaming {} notes",
+            args.renames.len()
+        );
+        let db_path = self.db_path.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let db = NotesDatabase::new(&db_path).map_err(|e| anyhow::anyhow!(e))?;
+
+            let mut renamed_count = 0;
+            let mut errors = Vec::new();
+
+            for pair in args.renames {
+                let old_name = pair.old_name;
+                let new_name = pair.new_name;
+
+                // Check if new name already exists
+                if let Ok(Some(_)) = db.get_note(&new_name) {
+                    errors.push(format!(
+                        "Cannot rename '{}' to '{}': Target already exists",
+                        old_name, new_name
+                    ));
+                    continue;
+                }
+
+                if let Ok(Some(meta)) = db.get_note(&old_name) {
+                    let note_path = PathBuf::from(&meta.path);
+                    let parent_dir = match note_path.parent() {
+                        Some(p) => p,
+                        None => {
+                            errors.push(format!("Invalid path for note '{}'", old_name));
+                            continue;
+                        }
+                    };
+                    let new_path = parent_dir.join(format!("{}.md", new_name));
+
+                    // Rename the file
+                    if let Err(e) = std::fs::rename(&meta.path, &new_path) {
+                        errors.push(format!("Failed to rename '{}': {}", old_name, e));
+                        continue;
+                    }
+
+                    // Update database - delete old, insert new
+                    if let Err(e) = db.delete_note(&old_name) {
+                        errors.push(format!(
+                            "Failed to delete old index for '{}': {}",
+                            old_name, e
+                        ));
+                        // Try to revert file rename? Too risky/complex for now.
+                        continue;
+                    }
+
+                    let content = match std::fs::read_to_string(&new_path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            errors.push(format!("Failed to read new file '{}': {}", new_name, e));
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = db.index_note(
+                        &new_name,
+                        new_path.to_str().unwrap(),
+                        &content,
+                        meta.folder.as_deref(),
+                    ) {
+                        errors.push(format!("Failed to index new note '{}': {}", new_name, e));
+                    } else {
+                        renamed_count += 1;
+                    }
+                } else {
+                    errors.push(format!("Note '{}' not found", old_name));
+                }
+            }
+
+            let mut output = format!("Successfully renamed {} notes.", renamed_count);
+            if !errors.is_empty() {
+                output.push_str("\n\nErrors encountered:\n");
+                for error in errors {
+                    output.push_str(&format!("- {}\n", error));
+                }
+            }
+
+            Ok(output)
+        })
+        .await
+        .map_err(|e| ToolError(e.to_string()))??;
+
+        Ok(result)
+    }
+}
+
+impl BatchRenameNotes {
+    pub fn new(db_path: PathBuf) -> Self {
+        Self { db_path }
+    }
+}
+
 // ==================== BATCH MOVE NOTES ====================
 
 #[derive(Deserialize)]

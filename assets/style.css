@@ -1133,7 +1133,6 @@ label.chat-avatar-system {
 box.chat-bubble {
   padding: 8px 12px;
   border-radius: 8px;
-  max-width: 560px;
   background: alpha(@border, 0.1);
   border: 1px solid alpha(@border, 0.2);
 }
@@ -1578,6 +1577,7 @@ window.aboutdialog label {
   /* Border removed to avoid double border with container */
   background-color: alpha(@base, 0.5);
   /* margin moved to container */
+  width: 100%;
 }
 
 .table-cell {
@@ -1601,9 +1601,29 @@ window.aboutdialog label {
   border: 1px solid alpha(@border, 0.5);
   margin: 8px 0;
   background-color: alpha(@base, 0.5);
+  width: 100%;
+}
+
+.markdown-table .table-cell {
+  min-width: 0;
 }
 
 .transparent-viewport {
   background-color: transparent;
   border: none;
+}
+
+/* Botones de acción en el chat */
+.chat-action-btn {
+  min-height: 24px;
+  min-width: 24px;
+  padding: 4px;
+  margin-left: 4px;
+  opacity: 0.6;
+  border: none;
+}
+
+.chat-action-btn:hover {
+  opacity: 1.0;
+  background-color: rgba(255, 255, 255, 0.1);
 }

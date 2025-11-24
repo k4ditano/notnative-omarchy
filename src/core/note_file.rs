@@ -1,6 +1,12 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Nombre de la carpeta de papelera
+const TRASH_DIR: &str = ".trash";
+/// Nombre de la carpeta de historial
+const HISTORY_DIR: &str = ".history";
 
 /// Gestor de archivos .md para notas
 #[derive(Debug, Clone)]
@@ -89,7 +95,56 @@ impl NoteFile {
         Ok(())
     }
 
-    /// Elimina el archivo
+    /// Mueve el archivo a la papelera
+    pub fn trash(self, notes_dir: &NotesDirectory) -> Result<()> {
+        let trash_path = notes_dir.trash_path();
+        if !trash_path.exists() {
+            fs::create_dir_all(&trash_path)
+                .context("No se pudo crear el directorio de papelera")?;
+        }
+
+        // Generar un nombre único con timestamp para evitar colisiones
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Preservar la estructura de carpetas en el nombre del archivo en la papelera
+        // Ej: "Docs VS/nota.md" -> "Docs VS_nota_1234567890.md"
+        let safe_name = self.name.replace('/', "_");
+        let trash_filename = format!("{}_{}.md", safe_name, timestamp);
+        let dest_path = trash_path.join(trash_filename);
+
+        fs::rename(&self.path, &dest_path).context("No se pudo mover el archivo a la papelera")
+    }
+
+    /// Crea una copia de seguridad del archivo actual en el historial
+    pub fn backup(&self, notes_dir: &NotesDirectory) -> Result<()> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+
+        let history_path = notes_dir.root().join(HISTORY_DIR);
+        if !history_path.exists() {
+            fs::create_dir_all(&history_path)
+                .context("No se pudo crear directorio de historial")?;
+        }
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let safe_name = self.name.replace('/', "_");
+        let backup_filename = format!("{}_{}.md", safe_name, timestamp);
+        let dest_path = history_path.join(backup_filename);
+
+        fs::copy(&self.path, &dest_path).context("No se pudo crear backup")?;
+
+        Ok(())
+    }
+
+    /// Elimina el archivo permanentemente
     pub fn delete(self) -> Result<()> {
         fs::remove_file(&self.path).context("No se pudo eliminar el archivo")
     }
@@ -119,6 +174,11 @@ impl NotesDirectory {
         &self.root
     }
 
+    /// Obtiene la ruta al directorio de papelera
+    pub fn trash_path(&self) -> PathBuf {
+        self.root.join(TRASH_DIR)
+    }
+
     /// Obtiene la ruta al archivo de base de datos
     pub fn db_path(&self) -> PathBuf {
         self.root.parent().unwrap_or(&self.root).join("notes.db")
@@ -145,9 +205,21 @@ impl NotesDirectory {
             return Ok(());
         }
 
+        // Ignorar la carpeta de papelera si estamos escaneando dentro de ella (no debería pasar con la lógica de abajo, pero por seguridad)
+        if dir.ends_with(TRASH_DIR) || dir.ends_with(HISTORY_DIR) {
+            return Ok(());
+        }
+
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+
+            // Ignorar la carpeta de papelera y historial
+            if path.file_name().and_then(|s| s.to_str()) == Some(TRASH_DIR)
+                || path.file_name().and_then(|s| s.to_str()) == Some(HISTORY_DIR)
+            {
+                continue;
+            }
 
             if path.is_dir() {
                 self.scan_directory(&path, notes)?;
@@ -199,6 +271,16 @@ impl NotesDirectory {
 
     /// Busca una nota por nombre
     pub fn find_note(&self, name: &str) -> Result<Option<NoteFile>> {
+        // Si el nombre empieza por .trash/, buscar directamente allí sin usar list_notes
+        if name.starts_with(".trash/") {
+            let path = self.root.join(format!("{}.md", name));
+            if path.exists() {
+                let mut note = NoteFile::open(&path)?;
+                note.name = name.to_string(); // Forzar el nombre correcto con carpeta
+                return Ok(Some(note));
+            }
+        }
+
         let notes = self.list_notes()?;
 
         // Primero intentar coincidencia exacta por nombre
@@ -270,6 +352,46 @@ mod tests {
         for note in notes {
             note.delete().unwrap();
         }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_trash_note() {
+        let temp_dir = env::temp_dir().join("notnative_test_trash");
+        let notes_dir = NotesDirectory::new(&temp_dir).unwrap();
+
+        let note = notes_dir.create_note("trash_me", "Delete me").unwrap();
+
+        let note_path = note.path().to_path_buf();
+        assert!(note_path.exists());
+
+        // Trash the note
+        note.trash(&notes_dir).unwrap();
+
+        // Original file should not exist
+        assert!(!note_path.exists());
+
+        // Trash directory should exist
+        let trash_dir = notes_dir.trash_path();
+        assert!(trash_dir.exists());
+
+        // Should be a file in trash
+        let entries: Vec<_> = fs::read_dir(&trash_dir)
+            .unwrap()
+            .map(|res| res.unwrap().path())
+            .collect();
+
+        assert_eq!(entries.len(), 1);
+        let trashed_file = &entries[0];
+        assert!(
+            trashed_file
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("trash_me_")
+        );
+
+        // Cleanup
         let _ = fs::remove_dir_all(temp_dir);
     }
 }

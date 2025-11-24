@@ -1,5 +1,6 @@
 use chrono::Local;
 use gtk::glib;
+use pulldown_cmark::{Options, Parser, html};
 use relm4::gtk::prelude::*;
 use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent, component, gtk};
 use std::cell::RefCell;
@@ -171,6 +172,8 @@ pub struct MainApp {
     todo_widgets: Rc<RefCell<Vec<gtk::CheckButton>>>,
     // Widgets de videos para modo normal (WebView)
     video_widgets: Rc<RefCell<Vec<gtk::Box>>>,
+    // Widgets de tablas para modo normal (WebView)
+    table_widgets: Rc<RefCell<Vec<gtk::Box>>>,
     // Widgets de recordatorios para modo normal
     reminder_widgets: Rc<RefCell<Vec<gtk::Box>>>,
     // Sender para comunicación asíncrona desde closures
@@ -352,11 +355,13 @@ pub enum AppMsg {
     ReorderNotes {
         source_name: String,
         target_name: String,
-    }, // Reordenar notas
+    }, // Reordenar notas (drag & drop)
     MoveFolder {
         folder_name: String,
         target_folder: Option<String>,
     }, // Mover carpeta
+    CopyText(String),           // Copiar texto al portapapeles
+    CreateNoteFromContent(String), // Crear nueva nota con contenido específico
     // Mensajes del reproductor de música
     ToggleMusicPlayer,                    // Abrir/cerrar el reproductor
     MusicSearch(String),                  // Buscar música en YouTube
@@ -2401,6 +2406,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             image_widgets: Rc::new(RefCell::new(Vec::new())),
             todo_widgets: Rc::new(RefCell::new(Vec::new())),
             video_widgets: Rc::new(RefCell::new(Vec::new())),
+            table_widgets: Rc::new(RefCell::new(Vec::new())),
             reminder_widgets: Rc::new(RefCell::new(Vec::new())),
             app_sender: Rc::new(RefCell::new(None)),
             youtube_server: {
@@ -3981,11 +3987,77 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         let sender_for_list_keys = sender.clone();
         let floating_entry_for_focus = model.floating_search_entry.clone();
         let floating_results_for_enter = model.floating_search_results_list.clone();
+        let floating_scroll_for_list = model.floating_search_results.clone();
+
         floating_list_key_controller.connect_key_pressed(
             move |_controller, keyval, _keycode, _modifiers| {
                 match keyval {
                     gtk::gdk::Key::Escape => {
                         sender_for_list_keys.input(AppMsg::ToggleFloatingSearch);
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Up => {
+                        if let Some(row) = floating_results_for_enter.selected_row() {
+                            if let Some(prev) = row.prev_sibling() {
+                                if let Some(prev_row) = prev.downcast_ref::<gtk::ListBoxRow>() {
+                                    floating_results_for_enter.select_row(Some(prev_row));
+                                    prev_row.grab_focus();
+
+                                    // Scroll manual para asegurar visibilidad
+                                    let scroll = floating_scroll_for_list.clone();
+                                    let row_y = prev_row
+                                        .compute_bounds(&floating_results_for_enter)
+                                        .map(|r| r.y())
+                                        .unwrap_or(0.0)
+                                        as f64;
+
+                                    gtk::glib::timeout_add_local_once(
+                                        std::time::Duration::from_millis(10),
+                                        move || {
+                                            let adjustment = scroll.vadjustment();
+                                            if row_y < adjustment.value() {
+                                                adjustment.set_value(row_y);
+                                            }
+                                        },
+                                    );
+                                }
+                            } else {
+                                // Si estamos en el primer elemento, volver al input
+                                floating_entry_for_focus.grab_focus();
+                            }
+                        }
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Down => {
+                        if let Some(row) = floating_results_for_enter.selected_row() {
+                            if let Some(next) = row.next_sibling() {
+                                if let Some(next_row) = next.downcast_ref::<gtk::ListBoxRow>() {
+                                    floating_results_for_enter.select_row(Some(next_row));
+                                    next_row.grab_focus();
+
+                                    // Scroll manual
+                                    let scroll = floating_scroll_for_list.clone();
+                                    let row_height = next_row.height() as f64;
+                                    let row_y = next_row
+                                        .compute_bounds(&floating_results_for_enter)
+                                        .map(|r| r.y())
+                                        .unwrap_or(0.0)
+                                        as f64;
+
+                                    gtk::glib::timeout_add_local_once(
+                                        std::time::Duration::from_millis(10),
+                                        move || {
+                                            let adjustment = scroll.vadjustment();
+                                            let page_size = adjustment.page_size();
+                                            if row_y + row_height > adjustment.value() + page_size {
+                                                adjustment
+                                                    .set_value(row_y + row_height - page_size);
+                                            }
+                                        },
+                                    );
+                                }
+                            }
+                        }
                         return gtk::glib::Propagation::Stop;
                     }
                     gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
@@ -4477,14 +4549,14 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 self.execute_action(action, &sender);
             }
             AppMsg::SaveCurrentNote => {
-                self.save_current_note();
+                self.save_current_note(true);
                 // Escanear recordatorios solo cuando se guarda manualmente (Ctrl+S)
                 sender.input(AppMsg::ParseRemindersInNote);
             }
             AppMsg::AutoSave => {
                 // Solo guardar si hay cambios sin guardar
                 if self.has_unsaved_changes {
-                    self.save_current_note();
+                    self.save_current_note(false);
                     // NO escanear recordatorios en autoguardado para evitar duplicados
                     println!("Autoguardado ejecutado");
                 }
@@ -4493,6 +4565,12 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 name,
                 highlight_text,
             } => {
+                // Guardar nota actual antes de cambiar (con embeddings)
+                // Solo si hay una nota actual O si hay cambios sin guardar (scratchpad)
+                if self.current_note.is_some() || self.has_unsaved_changes {
+                    self.save_current_note(true);
+                }
+
                 // Limpiar nombre de nota por si viene sucio desde la IA (hallucinación de contexto)
                 // Ej: "System: === Folder/Note ===" -> "Folder/Note"
                 let clean_name = name
@@ -4785,11 +4863,29 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                             eprintln!("Error al eliminar notas de la carpeta en BD: {}", e);
                         }
 
-                        // 2. Eliminar carpeta y todo su contenido del sistema de archivos
-                        if let Err(e) = std::fs::remove_dir_all(&folder_path) {
-                            eprintln!("Error al eliminar carpeta: {}", e);
+                        // 2. Mover carpeta a la papelera
+                        let trash_path = self.notes_dir.trash_path();
+                        if !trash_path.exists() {
+                            let _ = std::fs::create_dir_all(&trash_path);
+                        }
+
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+
+                        let safe_name = item_name.replace('/', "_");
+                        let trash_folder_name = format!("{}_{}", safe_name, timestamp);
+                        let dest_path = trash_path.join(trash_folder_name);
+
+                        if let Err(e) = std::fs::rename(&folder_path, &dest_path) {
+                            eprintln!("Error al mover carpeta a papelera: {}", e);
+                            // Fallback: intentar eliminar si no se puede mover
+                            if let Err(e) = std::fs::remove_dir_all(&folder_path) {
+                                eprintln!("Error al eliminar carpeta: {}", e);
+                            }
                         } else {
-                            println!("Carpeta eliminada: {}", item_name);
+                            println!("Carpeta movida a papelera: {}", item_name);
 
                             // Si la nota actual estaba en esta carpeta, limpiar el editor
                             if let Some(current) = &self.current_note {
@@ -4798,6 +4894,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                                     self.buffer = NoteBuffer::new();
                                     self.sync_to_view();
                                     self.window_title.set_label("NotNative");
+                                    self.has_unsaved_changes = false;
                                 }
                             }
 
@@ -4809,14 +4906,15 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 } else {
                     println!("Eliminar nota: {}", item_name);
                     if let Ok(Some(note)) = self.notes_dir.find_note(&item_name) {
-                        if let Err(e) = std::fs::remove_file(note.path()) {
-                            eprintln!("Error al eliminar nota: {}", e);
+                        // Mover a papelera en lugar de eliminar permanentemente
+                        if let Err(e) = note.trash(&self.notes_dir) {
+                            eprintln!("Error al mover nota a papelera: {}", e);
                         } else {
-                            // Eliminar de la base de datos
+                            // Eliminar de la base de datos (ya no está accesible en la UI)
                             if let Err(e) = self.notes_db.delete_note(&item_name) {
                                 eprintln!("Error al eliminar nota del índice: {}", e);
                             } else {
-                                println!("Nota eliminada del índice");
+                                println!("Nota eliminada del índice y movida a papelera");
                             }
 
                             // Si era la nota actual, limpiar el editor
@@ -4826,6 +4924,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                                     self.buffer = NoteBuffer::new();
                                     self.sync_to_view();
                                     self.window_title.set_label("NotNative");
+                                    self.has_unsaved_changes = false;
                                 }
                             }
                             // Refrescar sidebar
@@ -5566,7 +5665,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
             AppMsg::SaveAndSearchTag(tag) => {
                 // Primero guardar la nota actual para indexar los tags nuevos
-                self.save_current_note();
+                self.save_current_note(true);
 
                 // Abrir barra flotante y buscar el tag
                 sender.input(AppMsg::ToggleFloatingSearch);
@@ -6015,7 +6114,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 self.update_todo_in_buffer(line_number, new_state);
 
                 // Guardar automáticamente el cambio para que persista
-                self.save_current_note();
+                self.save_current_note(true);
 
                 // Actualizar resumen de TODOs
                 self.refresh_todos_summary();
@@ -7923,6 +8022,50 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 }
             }
 
+            AppMsg::CopyText(text) => {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    display.clipboard().set_text(&text);
+                    println!("Texto copiado al portapapeles");
+                }
+            }
+
+            AppMsg::CreateNoteFromContent(content) => {
+                // Generar un nombre único basado en timestamp
+                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                let name = format!("AI_Note_{}", timestamp);
+
+                // Crear la nota
+                match self.notes_dir.create_note(&name, &content) {
+                    Ok(note) => {
+                        // Indexar en DB
+                        let folder_for_db = self.notes_dir.relative_folder(note.path());
+                        let path_str = note.path().to_string_lossy().to_string();
+                        let _ = self.notes_db.index_note(
+                            &name,
+                            &path_str,
+                            &content,
+                            folder_for_db.as_deref(),
+                        );
+
+                        // Cargar la nota
+                        sender.input(AppMsg::LoadNote {
+                            name: name.clone(),
+                            highlight_text: None,
+                        });
+
+                        // Cambiar a modo normal si estamos en chat
+                        if *self.mode.borrow() == EditorMode::ChatAI {
+                            sender.input(AppMsg::ToggleChatMode);
+                        }
+
+                        println!("Nota creada: {}", name);
+                    }
+                    Err(e) => {
+                        eprintln!("Error creando nota desde chat: {}", e);
+                    }
+                }
+            }
+
             // ==================== RECORDATORIOS ====================
             AppMsg::ToggleRemindersPopover => {
                 // El toggle se maneja automáticamente por el botón con popover
@@ -8285,14 +8428,52 @@ Para ello debes usar la herramienta semantic_search para encontrar las notas ade
             }
 
             AppMsg::ReloadCurrentNoteIfMatching { path } => {
+                // Si hay cambios sin guardar en el buffer, NO recargar desde disco
+                // Esto protege contra condiciones de carrera donde el usuario sigue escribiendo
+                // mientras se procesa un autoguardado anterior.
+                if self.has_unsaved_changes {
+                    return;
+                }
+
                 if let Some(current) = &self.current_note {
                     if current.path().to_str().unwrap_or("") == path {
-                        // Recargar nota
+                        // Verificar si el contenido realmente cambió en disco
+                        // Esto evita recargas innecesarias que resetean el cursor (ej: autoguardado)
+                        if let Ok(disk_content) = std::fs::read_to_string(path) {
+                            let current_content = self.buffer.to_string();
+                            if disk_content == current_content {
+                                // Contenido idéntico, ignorar recarga
+                                return;
+                            }
+                        }
+
+                        // Recargar nota SIN guardar la actual (evitar sobrescribir cambios externos)
+                        // y SIN cambiar de modo/vista si estamos en Chat
                         let name = current.name().to_string();
-                        sender.input(AppMsg::LoadNote {
-                            name,
-                            highlight_text: None,
-                        });
+                        let old_cursor = self.cursor_position;
+
+                        if let Err(e) = self.load_note(&name) {
+                            eprintln!("Error recargando nota '{}': {}", name, e);
+                        } else {
+                            // Restaurar cursor (limitado al nuevo tamaño)
+                            self.cursor_position = old_cursor.min(self.buffer.len_chars());
+
+                            // Invalidar cache
+                            *self.cached_source_text.borrow_mut() = None;
+                            *self.cached_rendered_text.borrow_mut() = None;
+
+                            // Sincronizar vista y actualizar UI
+                            self.sync_to_view();
+                            self.update_status_bar(&sender);
+                            self.refresh_tags_display_with_sender(&sender);
+                            self.refresh_todos_summary();
+                            // No cambiamos window_title porque es la misma nota
+                            self.has_unsaved_changes = false;
+
+                            // NOTA: No cambiamos el modo ni la vista (content_stack)
+                            // para no interrumpir al usuario si está en el chat
+                        }
+
                         // Forzar parseo de recordatorios
                         sender.input(AppMsg::ParseRemindersInNote);
                     }
@@ -8555,7 +8736,10 @@ impl MainApp {
         grid.set_column_spacing(0);
         grid.set_row_spacing(0);
         grid.set_vexpand(false); // Importante: no expandir verticalmente
+        grid.set_hexpand(true); // NUEVO: Expandir horizontalmente
         grid.set_valign(gtk::Align::Start); // Alinear arriba
+        grid.set_halign(gtk::Align::Fill); // NUEVO: Llenar todo el ancho disponible
+        grid.set_column_homogeneous(true); // NUEVO: Columnas de igual ancho
 
         // Parsear filas
         let mut row_idx = 0;
@@ -8597,6 +8781,8 @@ impl MainApp {
                 let cell_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
                 cell_box.add_css_class("table-cell");
                 cell_box.set_valign(gtk::Align::Fill); // Estirar caja para llenar celda
+                cell_box.set_hexpand(true); // NUEVO: Expandir horizontalmente
+                cell_box.set_halign(gtk::Align::Fill); // NUEVO: Llenar todo el ancho
 
                 if row_idx == 0 {
                     cell_box.add_css_class("table-header");
@@ -8614,18 +8800,20 @@ impl MainApp {
         // 1. Si es pequeña, propagate_natural_height la ajusta al tamaño exacto.
         // 2. Si es grande (> 400px), aparece scroll y se limita la altura.
         let scrolled = gtk::ScrolledWindow::new();
-        scrolled.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic); // CAMBIADO: Never en horizontal
         scrolled.set_child(Some(&grid));
         scrolled.add_css_class("table-container");
 
         scrolled.set_propagate_natural_height(true);
-        scrolled.set_propagate_natural_width(true);
+        scrolled.set_propagate_natural_width(false); // CAMBIADO: No propagar ancho natural
 
         // Limitar altura máxima para tablas gigantes
         scrolled.set_max_content_height(400);
 
         scrolled.set_vexpand(false);
+        scrolled.set_hexpand(true); // NUEVO: Expandir horizontalmente
         scrolled.set_valign(gtk::Align::Start);
+        scrolled.set_halign(gtk::Align::Fill); // NUEVO: Llenar todo el ancho
         scrolled.set_has_frame(false);
 
         container.append(&scrolled);
@@ -9358,6 +9546,17 @@ impl MainApp {
             }
             EditorAction::CreateNote => {
                 sender.input(AppMsg::ShowCreateNoteDialog);
+            }
+            EditorAction::InsertTable => {
+                // Si hay selección, primero borrarla
+                if has_selection {
+                    self.delete_selection();
+                }
+
+                let table_template = "| Columna 1 | Columna 2 |\n|---|---|\n| Dato 1 | Dato 2 |\n";
+                self.buffer.insert(self.cursor_position, table_template);
+                self.cursor_position += table_template.chars().count();
+                self.has_unsaved_changes = true;
             }
             EditorAction::InsertImage => {
                 sender.input(AppMsg::InsertImage);
@@ -10446,6 +10645,7 @@ impl MainApp {
 
         self.image_widgets.borrow_mut().clear();
         self.video_widgets.borrow_mut().clear();
+        self.table_widgets.borrow_mut().clear();
         self.todo_widgets.borrow_mut().clear();
         self.reminder_widgets.borrow_mut().clear();
 
@@ -10567,6 +10767,7 @@ impl MainApp {
         // Procesar videos de YouTube usando marcadores [VIDEO:...] solo en modo NORMAL
         if *self.mode.borrow() == EditorMode::Normal {
             self.process_all_video_markers_in_buffer();
+            self.process_all_tables_in_buffer();
         }
 
         self.process_all_todos_in_buffer();
@@ -10612,13 +10813,25 @@ impl MainApp {
         }
 
         // Procesar imágenes en orden inverso para no afectar las posiciones
-        for (start, end, img_path) in images.into_iter().rev() {
+        for (start_byte, end_byte, img_path) in images.into_iter().rev() {
+            // Convertir byte offsets a char offsets para GtkTextIter
+            let start_char = buffer_text[..start_byte].chars().count();
+            let end_char = buffer_text[..end_byte].chars().count();
+
+            // Verificar si se necesita un salto de línea después de la imagen
+            // (si no hay uno ya en el texto original)
+            let needs_newline = if end_byte < buffer_text.len() {
+                !buffer_text[end_byte..].starts_with('\n')
+            } else {
+                false
+            };
+
             // Crear iteradores usando offsets de caracteres desde el inicio del buffer
             let mut marker_start = self.text_buffer.start_iter();
-            marker_start.set_offset(start as i32);
+            marker_start.set_offset(start_char as i32);
 
             let mut marker_end = self.text_buffer.start_iter();
-            marker_end.set_offset(end as i32);
+            marker_end.set_offset(end_char as i32);
             let marker_text = self.text_buffer.text(&marker_start, &marker_end, false);
 
             // Eliminar el marcador del buffer
@@ -10627,13 +10840,7 @@ impl MainApp {
 
             // Recrear el iterador de inicio después del delete
             let mut anchor_pos = self.text_buffer.start_iter();
-            anchor_pos.set_offset(start as i32);
-
-            // Insertar salto de línea antes de la imagen para separación
-            self.text_buffer.insert(&mut anchor_pos, "\n");
-
-            // Actualizar posición después de la inserción
-            anchor_pos.set_offset(start as i32 + 1);
+            anchor_pos.set_offset(start_char as i32);
 
             // Crear anchor en la posición donde estaba el marcador
             let anchor = self.text_buffer.create_child_anchor(&mut anchor_pos);
@@ -10691,10 +10898,13 @@ impl MainApp {
             // Anclar el botón al TextView
             self.text_view.add_child_at_anchor(&image_button, &anchor);
 
-            // Insertar salto de línea después de la imagen para separación
-            let mut after_anchor = self.text_buffer.start_iter();
-            after_anchor.set_offset(start as i32 + 1);
-            self.text_buffer.insert(&mut after_anchor, "\n");
+            if needs_newline {
+                // Insertar salto de línea después de la imagen si no existe
+                // Esto evita que el texto siguiente quede pegado a la imagen (inline)
+                let mut after_anchor = self.text_buffer.start_iter();
+                after_anchor.set_offset(start_char as i32 + 1);
+                self.text_buffer.insert(&mut after_anchor, "\n");
+            }
 
             // Guardar referencia al widget
             self.image_widgets.borrow_mut().push(picture);
@@ -10752,13 +10962,9 @@ impl MainApp {
             marker_end.set_offset(end as i32);
             self.text_buffer.delete(&mut marker_start, &mut marker_end);
 
-            // Insertar salto de línea
+            // Crear anchor en la posición donde estaba el marcador
             let mut anchor_pos = self.text_buffer.start_iter();
             anchor_pos.set_offset(start as i32);
-            self.text_buffer.insert(&mut anchor_pos, "\n");
-
-            // Actualizar posición y crear anchor
-            anchor_pos.set_offset(start as i32 + 1);
             let anchor = self.text_buffer.create_child_anchor(&mut anchor_pos);
 
             // Crear contenedor para el video
@@ -10814,13 +11020,179 @@ impl MainApp {
             self.text_view
                 .add_child_at_anchor(&video_container, &anchor);
 
-            // Insertar salto de línea después
+            // Guardar referencia
+            self.video_widgets.borrow_mut().push(video_container);
+        }
+    }
+
+    /// Procesa todas las tablas Markdown en el buffer y las reemplaza con WebViews
+    fn process_all_tables_in_buffer(&self) {
+        // Obtener todo el texto del buffer
+        let start = self.text_buffer.start_iter();
+        let end = self.text_buffer.end_iter();
+        let buffer_text = self.text_buffer.text(&start, &end, false).to_string();
+
+        // Detectar bloques de tablas
+        let lines: Vec<&str> = buffer_text.lines().collect();
+        let mut table_blocks = Vec::new();
+        let mut current_block_start: Option<usize> = None;
+        let mut current_block_end: Option<usize> = None;
+
+        // Rastreador de offset de caracteres
+        let mut char_offset = 0;
+
+        for line in lines.iter() {
+            let trimmed = line.trim();
+            // Criterio simple: empieza con |
+            let is_table_row = trimmed.starts_with('|');
+
+            let line_len = line.chars().count(); // Longitud en caracteres (no bytes)
+
+            if is_table_row {
+                if current_block_start.is_none() {
+                    current_block_start = Some(char_offset);
+                }
+                // El final del bloque se actualiza con cada línea de tabla consecutiva
+                current_block_end = Some(char_offset + line_len);
+            } else if let (Some(start), Some(end)) = (current_block_start, current_block_end) {
+                // Fin de un bloque detectado
+                table_blocks.push((start, end));
+                current_block_start = None;
+                current_block_end = None;
+            }
+
+            // +1 por el salto de línea que lines() consume
+            char_offset += line_len + 1;
+        }
+
+        // Capturar último bloque si termina en EOF
+        if let (Some(start), Some(end)) = (current_block_start, current_block_end) {
+            table_blocks.push((start, end));
+        }
+
+        // Procesar en orden inverso para mantener validez de offsets
+        for (start_char, end_char) in table_blocks.into_iter().rev() {
+            // Obtener texto del bloque para validación
+            let mut iter_start = self.text_buffer.start_iter();
+            iter_start.set_offset(start_char as i32);
+            let mut iter_end = self.text_buffer.start_iter();
+            iter_end.set_offset(end_char as i32);
+
+            let table_md = self
+                .text_buffer
+                .text(&iter_start, &iter_end, false)
+                .to_string();
+
+            // Validación mínima: debe tener separador de cabecera |---|
+            if !table_md.contains("|---") && !table_md.contains("| ---") {
+                continue;
+            }
+
+            // Renderizar HTML usando pulldown-cmark
+            let mut options = Options::empty();
+            options.insert(Options::ENABLE_TABLES);
+            let parser = Parser::new_ext(&table_md, options);
+            let mut html_output = String::new();
+            html::push_html(&mut html_output, parser);
+
+            // Estilar la tabla para que coincida con el tema oscuro/AI chat
+            // Usamos colores hardcoded oscuros por ahora, idealmente deberían venir del tema
+            let styled_html = format!(
+                r#"
+                <html>
+                <head>
+                <style>
+                    body {{ 
+                        font-family: 'Segoe UI', sans-serif; 
+                        padding: 0; 
+                        margin: 0; 
+                        background: transparent; 
+                        color: #e0e0e0; 
+                        font-size: 14px;
+                    }}
+                    table {{ 
+                        border-collapse: collapse; 
+                        width: 100%; 
+                        border: 1px solid #454545; 
+                        background-color: #1e1e1e;
+                        border-radius: 4px;
+                        overflow: hidden;
+                    }}
+                    th, td {{ 
+                        text-align: left; 
+                        padding: 10px 12px; 
+                        border: 1px solid #454545; 
+                    }}
+                    th {{ 
+                        background-color: #2d2d2d; 
+                        font-weight: 600; 
+                        color: #ffffff;
+                    }}
+                    tr:nth-child(even) {{ 
+                        background-color: #252525; 
+                    }}
+                    tr:hover {{ 
+                        background-color: #333333; 
+                    }}
+                </style>
+                </head>
+                <body>
+                {}
+                </body>
+                </html>
+                "#,
+                html_output
+            );
+
+            // Eliminar texto original del buffer
+            self.text_buffer.delete(&mut iter_start, &mut iter_end);
+
+            // Insertar un salto de línea antes si es necesario (opcional)
+
+            // Crear anchor en la posición
+            let mut anchor_pos = self.text_buffer.start_iter();
+            anchor_pos.set_offset(start_char as i32);
+            let anchor = self.text_buffer.create_child_anchor(&mut anchor_pos);
+
+            // Crear WebView
+            use webkit6::WebView;
+            use webkit6::prelude::WebViewExt;
+            let webview = webkit6::WebView::new();
+            webview.load_html(&styled_html, None);
+
+            // Configurar fondo transparente para integrarse con el editor
+            webview.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+
+            // Contenedor para el WebView
+            let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            // Altura estimada basada en número de líneas (aprox 30px por línea + header)
+            let num_lines = table_md.lines().count();
+            let estimated_height = (num_lines * 35) + 20;
+            container.set_height_request(estimated_height as i32);
+
+            // Obtener el ancho del TextView para hacer la tabla responsiva
+            let text_view_width = self.text_view.allocated_width();
+            let table_width = if text_view_width > 100 {
+                text_view_width - 50
+            } else {
+                700
+            };
+            container.set_width_request(table_width);
+
+            webview.set_vexpand(true);
+            webview.set_hexpand(true);
+            container.append(&webview);
+
+            // Añadir al TextView
+            self.text_view.add_child_at_anchor(&container, &anchor);
+
+            // Insertar salto de línea después para separar del siguiente texto
             let mut after_anchor = self.text_buffer.start_iter();
-            after_anchor.set_offset(start as i32 + 1);
+            after_anchor.set_offset(start_char as i32 + 1);
             self.text_buffer.insert(&mut after_anchor, "\n");
 
             // Guardar referencia
-            self.video_widgets.borrow_mut().push(video_container);
+            self.table_widgets.borrow_mut().push(container);
         }
     }
 }
@@ -12759,7 +13131,7 @@ impl MainApp {
     }
 
     /// Guarda la nota actual en su archivo .md
-    fn save_current_note(&mut self) {
+    fn save_current_note(&mut self, generate_embeddings: bool) {
         if let Some(note) = &self.current_note {
             // Obtener contenido anterior y nuevo
             let old_content = note.read().unwrap_or_default();
@@ -12771,6 +13143,12 @@ impl MainApp {
                 // println!("Nota sin cambios. Omitiendo guardado.");
                 self.has_unsaved_changes = false;
                 return;
+            }
+
+            // Crear backup antes de guardar cambios
+            if let Err(e) = note.backup(&self.notes_dir) {
+                eprintln!("Error creando backup de historial: {}", e);
+                // Continuamos con el guardado aunque falle el backup
             }
 
             if let Err(e) = note.write(&new_content) {
@@ -12792,8 +13170,8 @@ impl MainApp {
                 } else {
                     println!("Índice actualizado");
 
-                    // Indexar embeddings si está habilitado
-                    if self.notes_config.borrow().get_embeddings_enabled() {
+                    // Indexar embeddings si está habilitado y solicitado
+                    if generate_embeddings && self.notes_config.borrow().get_embeddings_enabled() {
                         self.index_note_embeddings_async(note.path(), &new_content);
                     }
 
@@ -13217,6 +13595,29 @@ impl MainApp {
                     .push(note_meta.name);
             }
 
+            // Escanear notas en la papelera (que no están en la BD)
+            let trash_path = self.notes_dir.trash_path();
+            if trash_path.exists() {
+                if let Ok(entries) = std::fs::read_dir(&trash_path) {
+                    for entry in entries.flatten() {
+                        if let Ok(metadata) = entry.metadata() {
+                            if metadata.is_file() {
+                                let path = entry.path();
+                                if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                                        // Añadir a la carpeta .trash
+                                        by_folder
+                                            .entry(".trash".to_string())
+                                            .or_insert_with(Vec::new)
+                                            .push(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Escanear el filesystem RECURSIVAMENTE para incluir carpetas vacías
             fn scan_folders_recursive(
                 path: &std::path::Path,
@@ -13230,6 +13631,15 @@ impl MainApp {
                                 // Obtener el path relativo desde el root
                                 if let Ok(relative) = entry.path().strip_prefix(root) {
                                     if let Some(folder_name) = relative.to_str() {
+                                        // Ignorar carpetas ocultas (excepto .trash)
+                                        // Verificar si ALGUNA parte del path empieza por .
+                                        if folder_name
+                                            .split('/')
+                                            .any(|part| part.starts_with('.') && part != ".trash")
+                                        {
+                                            continue;
+                                        }
+
                                         // Asegurar que la carpeta esté en el HashMap
                                         folders_set
                                             .entry(folder_name.to_string())
@@ -13250,9 +13660,40 @@ impl MainApp {
 
             // Ordenar solo las carpetas, no las notas (las notas ya vienen ordenadas por order_index)
             let mut folders: Vec<_> = by_folder.keys().cloned().collect();
-            folders.sort();
+            folders.sort_by(|a, b| {
+                // .trash siempre al final
+                if a == ".trash" {
+                    std::cmp::Ordering::Greater
+                } else if b == ".trash" {
+                    std::cmp::Ordering::Less
+                } else {
+                    a.cmp(b)
+                }
+            });
+
+            // Ordenar notas dentro de .trash por timestamp descendente (más reciente arriba)
+            if let Some(trash_notes) = by_folder.get_mut(".trash") {
+                trash_notes.sort_by(|a, b| {
+                    // Extraer timestamp del final
+                    let get_ts = |name: &str| -> u64 {
+                        name.rsplit('_')
+                            .next()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0)
+                    };
+                    let ts_a = get_ts(a);
+                    let ts_b = get_ts(b);
+                    // Orden descendente (b cmp a)
+                    ts_b.cmp(&ts_a)
+                });
+            }
 
             for folder in folders {
+                // Ocultar carpeta .history y otras ocultas de la interfaz
+                if folder != ".trash" && folder.split('/').any(|p| p.starts_with('.')) {
+                    continue;
+                }
+
                 if let Some(notes_in_folder) = by_folder.get(&folder) {
                     // Si no es la raíz, mostrar carpeta como encabezado expandible
                     if folder != "/" {
@@ -13300,14 +13741,23 @@ impl MainApp {
                             .pixel_size(12)
                             .build();
 
+                        let icon_name = if folder == ".trash" {
+                            "user-trash-symbolic"
+                        } else {
+                            "folder-symbolic"
+                        };
+
                         let folder_icon = gtk::Image::builder()
-                            .icon_name("folder-symbolic")
+                            .icon_name(icon_name)
                             .pixel_size(16)
                             .build();
 
                         // Obtener solo el nombre de la carpeta (última parte del path)
-                        let folder_display_name =
-                            folder.split('/').last().unwrap_or(&folder).to_string();
+                        let folder_display_name = if folder == ".trash" {
+                            "Papelera".to_string()
+                        } else {
+                            folder.split('/').last().unwrap_or(&folder).to_string()
+                        };
 
                         // Calcular nivel de indentación (número de '/' en el path)
                         let depth = folder.matches('/').count();
@@ -13395,7 +13845,7 @@ impl MainApp {
                         } else {
                             // Mostrar Label normal para carpeta
                             let folder_label = gtk::Label::builder()
-                                .label(folder_display_name)
+                                .label(&folder_display_name)
                                 .xalign(0.0)
                                 .hexpand(true)
                                 .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -13427,6 +13877,17 @@ impl MainApp {
                         // Si no está expandida, no mostrar las notas
                         if !is_expanded {
                             continue;
+                        }
+                    }
+
+                    // Pre-calcular colisiones de nombres para la papelera
+                    let mut trash_name_counts = std::collections::HashMap::new();
+                    if folder == ".trash" {
+                        for note_name in notes_in_folder {
+                            if let Some(idx) = note_name.rfind('_') {
+                                let (name_part, _) = note_name.split_at(idx);
+                                *trash_name_counts.entry(name_part.to_string()).or_insert(0) += 1;
+                            }
                         }
                     }
 
@@ -13556,13 +14017,66 @@ impl MainApp {
                             );
                         } else {
                             // Mostrar Label normal
+                            // Si estamos en la papelera, limpiar el nombre y mostrar tooltip
+                            let (display_name, tooltip_text) = if folder == ".trash" {
+                                if let Some(idx) = note_name_owned.rfind('_') {
+                                    let (name_part, ts_part) = note_name_owned.split_at(idx);
+                                    // ts_part incluye el '_', así que lo saltamos
+                                    let ts_str = &ts_part[1..];
+
+                                    // Verificar si hay colisión visual
+                                    let count = trash_name_counts.get(name_part).unwrap_or(&0);
+                                    let show_date = *count > 1;
+
+                                    // Verificar si es un timestamp (solo dígitos y longitud razonable)
+                                    if ts_str.chars().all(char::is_numeric) && ts_str.len() > 8 {
+                                        let (tooltip, date_suffix) =
+                                            if let Ok(ts) = ts_str.parse::<i64>() {
+                                                if let Some(datetime) =
+                                                    chrono::DateTime::from_timestamp(ts, 0)
+                                                {
+                                                    let local: chrono::DateTime<chrono::Local> =
+                                                        chrono::DateTime::from(datetime);
+                                                    let tooltip = format!(
+                                                        "Borrado el: {}",
+                                                        local.format("%Y-%m-%d %H:%M:%S")
+                                                    );
+                                                    let suffix = if show_date {
+                                                        format!(" ({})", local.format("%H:%M"))
+                                                    } else {
+                                                        String::new()
+                                                    };
+                                                    (Some(tooltip), suffix)
+                                                } else {
+                                                    (None, String::new())
+                                                }
+                                            } else {
+                                                (None, String::new())
+                                            };
+                                        (format!("{}{}", name_part, date_suffix), tooltip)
+                                    } else {
+                                        (note_name_owned.clone(), Some(note_name_owned.clone()))
+                                    }
+                                } else {
+                                    (note_name_owned.clone(), Some(note_name_owned.clone()))
+                                }
+                            } else {
+                                (note_name_owned.clone(), Some(note_name_owned.clone()))
+                            };
+
                             let label = gtk::Label::builder()
-                                .label(&note_name_owned)
+                                .label(&display_name)
                                 .xalign(0.0)
                                 .hexpand(true)
                                 .ellipsize(gtk::pango::EllipsizeMode::End)
                                 .max_width_chars(40)
+                                .tooltip_text(&tooltip_text.unwrap_or_default())
                                 .build();
+
+                            // Si es papelera, usar un color más tenue
+                            if folder == ".trash" {
+                                label.add_css_class("dim-label");
+                            }
 
                             row.append(&label);
                         }
@@ -18020,6 +18534,7 @@ impl MainApp {
         let bubble = gtk::Box::new(gtk::Orientation::Vertical, 6);
         bubble.add_css_class("chat-bubble");
         bubble.set_spacing(6);
+        bubble.set_hexpand(true); // NUEVO: Permitir expansión horizontal
 
         let meta_label = gtk::Label::new(None);
         meta_label.add_css_class("chat-meta");
@@ -18067,7 +18582,46 @@ impl MainApp {
                 meta_label.set_xalign(0.0);
 
                 // Usar renderizado avanzado para soportar tablas
-                self.render_chat_content(content, &bubble, sender);
+                self.render_chat_content(content, &bubble, sender.clone());
+
+                // Botones de acción (Copiar, Crear Nota)
+                let actions_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                actions_box.set_halign(gtk::Align::End);
+                actions_box.set_margin_top(4);
+
+                // Botón Copiar
+                let copy_btn = gtk::Button::builder()
+                    .icon_name("edit-copy-symbolic")
+                    .css_classes(vec!["flat", "circular", "chat-action-btn"])
+                    .tooltip_text("Copiar respuesta")
+                    .build();
+
+                let content_clone = content.to_string();
+                let sender_clone = sender.clone();
+                copy_btn.connect_clicked(move |_| {
+                    if let Some(s) = &sender_clone {
+                        s.input(AppMsg::CopyText(content_clone.clone()));
+                    }
+                });
+                actions_box.append(&copy_btn);
+
+                // Botón Crear Nota
+                let note_btn = gtk::Button::builder()
+                    .icon_name("document-new-symbolic")
+                    .css_classes(vec!["flat", "circular", "chat-action-btn"])
+                    .tooltip_text("Crear nota con esta respuesta")
+                    .build();
+
+                let content_clone2 = content.to_string();
+                let sender_clone2 = sender.clone();
+                note_btn.connect_clicked(move |_| {
+                    if let Some(s) = &sender_clone2 {
+                        s.input(AppMsg::CreateNoteFromContent(content_clone2.clone()));
+                    }
+                });
+                actions_box.append(&note_btn);
+
+                bubble.append(&actions_box);
 
                 row.append(&avatar);
                 row.append(&bubble);

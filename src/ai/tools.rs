@@ -291,8 +291,8 @@ impl<M: EmbeddingModel + Sync + Send + Clone + 'static> Tool for CreateNote<M> {
             .map_err(|e| anyhow::anyhow!(e))?;
 
             Ok::<String, anyhow::Error>(format!(
-                "Note '{}' created successfully at {}",
-                args_for_closure.name, path_str
+                "Note '{}' created successfully at {}. Link: [{}]( {})",
+                args_for_closure.name, path_str, args_for_closure.name, args_for_closure.name
             ))
         })
         .await

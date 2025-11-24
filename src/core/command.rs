@@ -26,6 +26,8 @@ pub enum EditorAction {
 
     /// Insertar imagen
     InsertImage,
+    /// Insertar tabla
+    InsertTable,
 
     /// Undo/Redo
     Undo,
@@ -160,6 +162,7 @@ impl CommandParser {
                 "v" => EditorAction::Paste,
                 "z" => EditorAction::Undo,
                 "r" => EditorAction::Redo,
+                "t" => EditorAction::InsertTable,
                 _ => EditorAction::None,
             };
         }

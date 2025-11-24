@@ -10,14 +10,15 @@ use crate::ai::tools_extended::{
     AppendToNote, DeleteNote, GetAllTags, GetNotesWithTag, GetRecentNotes, UpdateNote,
 };
 use crate::ai::tools_folders::{
-    BatchCreateFolders, BatchMoveNotes, CreateFolder, DeleteFolder, ListFolders, MoveNote,
-    RenameNote,
+    BatchCreateFolders, BatchMoveNotes, BatchRenameNotes, CreateFolder, DeleteFolder, ListFolders,
+    MoveNote, RenameNote,
 };
 use crate::ai::tools_reminders::{CreateReminder, DeleteReminder, ModifyReminder};
 use crate::ai::tools_tags::{AddTag, DuplicateNote, MergeNotes, RemoveTag};
 use crate::ai::tools_utility::{
     CreateDailyNote, FindAndReplace, GetAppInfo, GetSystemDateTime, GetWorkspacePath,
 };
+use crate::ai::tools_web::{FetchUrl, WebSearch};
 use crate::ai_chat::ChatMessage;
 use crate::ai_client::AIClient;
 use crate::mcp::MCPToolExecutor;
@@ -142,6 +143,7 @@ impl RigExecutor {
                 let move_note = MoveNote::new(db_path.clone(), notes_path.clone());
                 let batch_move_notes = BatchMoveNotes::new(db_path.clone(), notes_path.clone());
                 let rename_note = RenameNote::new(db_path.clone());
+                let batch_rename_notes = BatchRenameNotes::new(db_path.clone());
                 let add_tag = AddTag::new(db_path.clone());
                 let remove_tag = RemoveTag::new(db_path.clone());
                 let duplicate_note = DuplicateNote::new(db_path.clone());
@@ -154,6 +156,8 @@ impl RigExecutor {
                 let get_system_date_time = GetSystemDateTime::new();
                 let get_app_info = GetAppInfo::new(notes_path.clone());
                 let get_workspace_path = GetWorkspacePath::new(notes_path.clone());
+                let web_search = WebSearch::new();
+                let fetch_url = FetchUrl::new();
 
                 // Build the agent
                 let mut agent_builder = oa_client.agent(&client.model)
@@ -168,13 +172,19 @@ When organizing notes, follow this STRICT protocol:
 2. CREATE FOLDERS: Use `batch_create_folders` to create ALL necessary folders in a single step.
 3. MOVE NOTES: Use `batch_move_notes` to move notes into their respective folders. Do NOT use `move_note` one by one.
 4. DO NOT RENAME: Do not rename notes unless explicitly asked.
-5. SUMMARY: Provide a final summary of your actions.")
+5. SUMMARY: Provide a final summary of your actions. ALWAYS include a link to any note you created or modified using the format `[Note Name](Note Name)`.
+
+IMPORTANT: DO NOT create new notes unless the user explicitly asks you to (e.g., \"create a note\", \"save this\").
+If the user asks for a summary, a search, or an explanation, JUST provide the answer in the chat. DO NOT create a note with the result.
+
+LANGUAGE INSTRUCTION: You must answer in the same language as the user's request. If the user speaks Spanish, you MUST answer in Spanish.")
                     .tool(create_note)
                     .tool(read_note)
                     .tool(update_note)
                     .tool(append_to_note)
                     .tool(delete_note)
                     .tool(rename_note)
+                    .tool(batch_rename_notes)
                     .tool(duplicate_note)
                     .tool(merge_notes)
                     .tool(search_notes)
@@ -202,7 +212,9 @@ When organizing notes, follow this STRICT protocol:
                     .tool(modify_reminder)
                     .tool(get_system_date_time)
                     .tool(get_app_info)
-                    .tool(get_workspace_path);
+                    .tool(get_workspace_path)
+                    .tool(web_search)
+                    .tool(fetch_url);
 
                 if let Some(mem) = memory {
                     let semantic_search = SemanticSearch {
@@ -267,6 +279,7 @@ When organizing notes, follow this STRICT protocol:
                 let move_note = MoveNote::new(db_path.clone(), notes_path.clone());
                 let batch_move_notes = BatchMoveNotes::new(db_path.clone(), notes_path.clone());
                 let rename_note = RenameNote::new(db_path.clone());
+                let batch_rename_notes = BatchRenameNotes::new(db_path.clone());
                 let add_tag = AddTag::new(db_path.clone());
                 let remove_tag = RemoveTag::new(db_path.clone());
                 let duplicate_note = DuplicateNote::new(db_path.clone());
@@ -279,6 +292,8 @@ When organizing notes, follow this STRICT protocol:
                 let get_system_date_time = GetSystemDateTime::new();
                 let get_app_info = GetAppInfo::new(notes_path.clone());
                 let get_workspace_path = GetWorkspacePath::new(notes_path.clone());
+                let web_search = WebSearch::new();
+                let fetch_url = FetchUrl::new();
 
                 let mut agent_builder = or_client.agent(&client.model)
                     .temperature(client.temperature as f64)
@@ -292,13 +307,19 @@ When organizing notes, follow this STRICT protocol:
 2. CREATE FOLDERS: Use `batch_create_folders` to create ALL necessary folders in a single step.
 3. MOVE NOTES: Use `batch_move_notes` to move notes into their respective folders. Do NOT use `move_note` one by one.
 4. DO NOT RENAME: Do not rename notes unless explicitly asked.
-5. SUMMARY: Provide a final summary of your actions.")
+5. SUMMARY: Provide a final summary of your actions. ALWAYS include a link to any note you created or modified using the format `[Note Name](Note Name)`.
+
+IMPORTANT: DO NOT create new notes unless the user explicitly asks you to (e.g., \"create a note\", \"save this\").
+If the user asks for a summary, a search, or an explanation, JUST provide the answer in the chat. DO NOT create a note with the result.
+
+LANGUAGE INSTRUCTION: You must answer in the same language as the user's request. If the user speaks Spanish, you MUST answer in Spanish.")
                     .tool(create_note)
                     .tool(read_note)
                     .tool(update_note)
                     .tool(append_to_note)
                     .tool(delete_note)
                     .tool(rename_note)
+                    .tool(batch_rename_notes)
                     .tool(duplicate_note)
                     .tool(merge_notes)
                     .tool(search_notes)
@@ -326,7 +347,9 @@ When organizing notes, follow this STRICT protocol:
                     .tool(modify_reminder)
                     .tool(get_system_date_time)
                     .tool(get_app_info)
-                    .tool(get_workspace_path);
+                    .tool(get_workspace_path)
+                    .tool(web_search)
+                    .tool(fetch_url);
 
                 if let Some(mem) = memory {
                     let semantic_search = SemanticSearch {

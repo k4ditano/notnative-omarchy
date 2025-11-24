@@ -53,6 +53,13 @@ pub fn create_notes_watcher(
                 for path in &event.paths {
                     // Solo procesar archivos .md
                     if path.extension().map_or(false, |e| e == "md") {
+                        // Ignorar archivos en .trash o .history
+                        if path.to_string_lossy().contains("/.trash/")
+                            || path.to_string_lossy().contains("/.history/")
+                        {
+                            continue;
+                        }
+
                         println!("📁 Detectado cambio en: {:?}", path);
 
                         if let Ok(content) = std::fs::read_to_string(path) {
@@ -82,11 +89,14 @@ pub fn create_notes_watcher(
                                 } else {
                                     println!("✅ Nota indexada: {} (carpeta: {:?})", name, folder);
 
-                                    // Indexar embeddings automáticamente
+                                    // Indexar embeddings automáticamente - DESACTIVADO para evitar duplicados con autoguardado
+                                    // La app se encarga de indexar embeddings cuando es necesario (guardado manual, cambio de nota, etc.)
+                                    /*
                                     let _ = sender.send(crate::app::AppMsg::IndexNoteEmbeddings {
                                         path: path.to_str().unwrap_or("").to_string(),
                                         content: content.clone(),
                                     });
+                                    */
 
                                     // Si es la nota actual, recargarla para mostrar cambios
                                     let _ = sender.send(
@@ -115,6 +125,13 @@ pub fn create_notes_watcher(
             EventKind::Remove(_) => {
                 for path in &event.paths {
                     if path.extension().map_or(false, |e| e == "md") {
+                        // Ignorar archivos en .trash o .history
+                        if path.to_string_lossy().contains("/.trash/")
+                            || path.to_string_lossy().contains("/.history/")
+                        {
+                            continue;
+                        }
+
                         if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                             println!("🗑️ Detectada eliminación: {}", name);
 
