@@ -1627,3 +1627,62 @@ window.aboutdialog label {
   opacity: 1.0;
   background-color: rgba(255, 255, 255, 0.1);
 }
+
+/* ========================================
+   Quick Notes - Ventana Flotante
+   ======================================== */
+
+.quick-note-window {
+  background-color: @base;
+  border-radius: 12px;
+  border: 1px solid @border;
+}
+
+.quick-note-container {
+  background-color: @base;
+}
+
+.quick-note-header {
+  padding: 8px 12px;
+  background-color: alpha(@selected-text, 0.05);
+}
+
+.quick-note-icon {
+  font-size: 1.4em;
+}
+
+.quick-note-title {
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+.quick-notes-list row {
+  padding: 0;
+  margin: 2px 4px;
+  border-radius: 8px;
+}
+
+.quick-notes-list row:hover {
+  background-color: alpha(@selected-text, 0.1);
+}
+
+.quick-notes-list row:selected {
+  background-color: alpha(@selected-text, 0.2);
+}
+
+.quick-note-row {
+  border-radius: 8px;
+}
+
+.quick-note-editor {
+  background-color: transparent;
+  font-family: monospace;
+  font-size: 0.95em;
+}
+
+.quick-note-status {
+  background-color: alpha(@selected-text, 0.03);
+  border-top: 1px solid alpha(@border, 0.3);
+  padding: 6px 12px;
+  font-size: 0.85em;
+}

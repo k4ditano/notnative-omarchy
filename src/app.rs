@@ -153,9 +153,13 @@ pub struct MainApp {
     floating_search_results_list: gtk::ListBox,
     floating_search_rows: Rc<RefCell<Vec<gtk::ListBoxRow>>>,
     floating_search_visible: bool,
-    floating_search_in_current_note: bool, // true = buscar solo en nota actual, false = buscar en todas
+    floating_search_in_current_note: Rc<RefCell<bool>>, // true = buscar solo en nota actual, false = buscar en todas
+    // Para navegación entre coincidencias en búsqueda dentro de nota
+    in_note_search_matches: Rc<RefCell<Vec<(i32, i32)>>>, // Vector de (start_offset, end_offset) de cada coincidencia
+    in_note_search_current_index: Rc<RefCell<usize>>,     // Índice de la coincidencia actual
     semantic_search_enabled: bool,         // Toggle para búsqueda semántica
-    semantic_search_timeout_id: Rc<RefCell<Option<gtk::glib::SourceId>>>, // ID del timeout para debounce
+    semantic_search_timeout_id: Rc<RefCell<Option<gtk::glib::SourceId>>>, // ID del timeout para debounce semántico
+    traditional_search_timeout_id: Rc<RefCell<Option<gtk::glib::SourceId>>>, // ID del timeout para debounce tradicional
     semantic_search_answer_box: gtk::Box, // Box para mostrar la respuesta del agente
     semantic_search_answer_row: gtk::ListBoxRow, // Row padre del answer_box
     semantic_search_answer_label: gtk::Label, // Label con la respuesta del agente
@@ -250,6 +254,9 @@ pub struct MainApp {
     // Sistema de memoria vectorial RIG (búsqueda semántica unificada)
     #[allow(dead_code)] // No impl Debug
     note_memory: Rc<RefCell<Option<Arc<NoteMemory<rig::providers::openai::EmbeddingModel>>>>>,
+    // Quick Notes - Ventana flotante para notas rápidas
+    #[allow(dead_code)]
+    quick_note_window: Rc<RefCell<Option<crate::quick_note::QuickNoteWindow>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +285,9 @@ pub enum AppMsg {
     MinimizeToTray,       // Minimizar a bandeja del sistema
     ShowWindow,           // Mostrar ventana desde bandeja
     QuitApp,              // Cerrar completamente la aplicación
+    // Quick Notes - Ventana flotante
+    ToggleQuickNote,      // Mostrar/ocultar ventana de quick notes
+    NewQuickNote,         // Crear nueva quick note
     ToggleChatMode,       // Alternar entre Modo Agente (con tools) y Chat Normal (sin tools)
     NewChatSession,       // Iniciar nueva sesión de chat explícitamente
     KeyPress {
@@ -316,6 +326,8 @@ pub enum AppMsg {
     ToggleSemanticSearchWithNotification, // Toggle con notificación de modo
     ToggleFloatingSearch,            // Toggle de la barra flotante (Ctrl+F) - búsqueda global
     ToggleFloatingSearchInNote,      // Toggle de búsqueda solo en nota actual (Alt+F)
+    InNoteSearchNext,                // Ir a la siguiente coincidencia en búsqueda dentro de nota
+    InNoteSearchPrev,                // Ir a la anterior coincidencia en búsqueda dentro de nota
     FloatingSearchNotes(String),     // Buscar desde la barra flotante
     PerformFloatingSearch(String),   // Ejecutar búsqueda después del debounce
     ExecuteFloatingSearch(String),   // Ejecutar búsqueda real después de mostrar "Buscando..."
@@ -957,40 +969,101 @@ impl SimpleComponent for MainApp {
         context_menu.set_has_arrow(false);
         context_menu.add_css_class("context-menu");
 
+        // Helper para crear la nota de keybindings y marcar onboarding como completo
+        fn create_keybindings_note(
+            notes_dir: &NotesDirectory,
+            notes_config: &Rc<RefCell<NotesConfig>>,
+            note_name: &str,
+        ) {
+            let keybindings_content = include_str!("../docs/KEYBINDINGS.md");
+            
+            // Crear en carpeta Notnative
+            let full_name = format!("Notnative/{}", note_name);
+            
+            match notes_dir.create_note(&full_name, keybindings_content) {
+                Ok(_) => {
+                    println!("✅ Nota '{}' creada", full_name);
+                }
+                Err(e) => {
+                    // Si ya existe una nota con ese nombre, no es error
+                    if e.to_string().contains("existe") || e.to_string().contains("exists") {
+                        println!("ℹ️ Nota '{}' ya existía", full_name);
+                    } else {
+                        eprintln!("⚠️ Error creando nota de atajos: {}", e);
+                    }
+                }
+            }
+            
+            // Marcar onboarding como completado y guardar config
+            {
+                let mut config = notes_config.borrow_mut();
+                config.set_onboarding_completed(true);
+                if let Err(e) = config.save(NotesConfig::default_path()) {
+                    eprintln!("⚠️ Error guardando config: {}", e);
+                } else {
+                    println!("✅ Onboarding marcado como completado");
+                }
+            }
+        }
+
         // Intentar cargar la última nota abierta, si no la de bienvenida, o crearla si no existe
         let (initial_buffer, current_note) = {
+            // Nombre único para la nota de atajos de NotNative
+            const KEYBINDINGS_NOTE_NAME: &str = "NotNative_Atajos_de_Teclado";
+            
+            // Obtener valores antes para evitar RefCell borrow conflicts
+            let last_note = notes_config.borrow().get_last_opened_note().map(|s| s.to_string());
+            let onboarding_completed = notes_config.borrow().is_onboarding_completed();
+            
             // Primero intentar cargar la última nota abierta
-            if let Some(last_note) = notes_config.borrow().get_last_opened_note() {
-                match notes_dir.find_note(last_note) {
+            if let Some(last_note) = last_note {
+                match notes_dir.find_note(&last_note) {
                     Ok(Some(note)) => match note.read() {
                         Ok(content) => {
                             println!("Última nota abierta cargada: {}", last_note);
+                            
+                            // Verificar si necesitamos crear la nota de onboarding
+                            if !onboarding_completed {
+                                create_keybindings_note(&notes_dir, &notes_config, KEYBINDINGS_NOTE_NAME);
+                            }
+                            
                             (NoteBuffer::from_text(&content), Some(note))
                         }
                         Err(_) => {
                             // Si no se puede leer, intentar con bienvenida
-                            try_load_or_create_welcome(&notes_dir)
+                            try_load_or_create_welcome(&notes_dir, &notes_config, onboarding_completed)
                         }
                     },
                     _ => {
                         // Si la última nota no existe, intentar con bienvenida
-                        try_load_or_create_welcome(&notes_dir)
+                        try_load_or_create_welcome(&notes_dir, &notes_config, onboarding_completed)
                     }
                 }
             } else {
                 // No hay última nota guardada, intentar con bienvenida
-                try_load_or_create_welcome(&notes_dir)
+                try_load_or_create_welcome(&notes_dir, &notes_config, onboarding_completed)
             }
         };
 
         // Helper function para cargar o crear bienvenida
         fn try_load_or_create_welcome(
             notes_dir: &NotesDirectory,
+            notes_config: &Rc<RefCell<NotesConfig>>,
+            onboarding_completed: bool,
         ) -> (NoteBuffer, Option<NoteFile>) {
+            // Nombre único para la nota de atajos de NotNative
+            const KEYBINDINGS_NOTE_NAME: &str = "NotNative_Atajos_de_Teclado";
+            
             match notes_dir.find_note("bienvenida") {
                 Ok(Some(note)) => match note.read() {
                     Ok(content) => {
                         println!("Nota 'bienvenida' cargada");
+                        
+                        // Si el onboarding no está completo, crear nota de atajos
+                        if !onboarding_completed {
+                            create_keybindings_note(notes_dir, notes_config, KEYBINDINGS_NOTE_NAME);
+                        }
+                        
                         (NoteBuffer::from_text(&content), Some(note))
                     }
                     Err(_) => (NoteBuffer::new(), None),
@@ -999,8 +1072,8 @@ impl SimpleComponent for MainApp {
                     // Solo crear la nota de bienvenida si es primera vez (ninguna otra nota existe)
                     match notes_dir.list_notes() {
                         Ok(notes) if notes.is_empty() => {
-                            // Primera vez usando la app, crear nota de bienvenida
-                            let welcome_content = "# Bienvenido a NotNative
+                            // Primera vez usando la app
+                            let welcome_content = r#"# Bienvenido a NotNative
 
 Esta es tu primera nota. NotNative guarda cada nota como un archivo .md independiente.
 
@@ -1013,18 +1086,35 @@ Esta es tu primera nota. NotNative guarda cada nota como un archivo .md independ
 - `u` → Deshacer
 - `Ctrl+S` → Guardar
 
-Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
-";
-                            match notes_dir.create_note("bienvenida", welcome_content) {
+Las notas se guardan automáticamente en: `~/.local/share/notnative/notes/`
+
+## 📝 Quick Notes
+
+Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicación** (incluso juegos fullscreen).
+
+👉 **Lee la nota @NotNative_Atajos_de_Teclado para configurar los atajos de teclado globales.**
+"#;
+                            // Crear nota de bienvenida
+                            let result = match notes_dir.create_note("bienvenida", welcome_content) {
                                 Ok(note) => {
                                     println!("Nota de bienvenida creada");
                                     (NoteBuffer::from_text(welcome_content), Some(note))
                                 }
                                 Err(_) => (NoteBuffer::new(), None),
-                            }
+                            };
+                            
+                            // Crear nota de keybindings (primera vez)
+                            create_keybindings_note(notes_dir, notes_config, KEYBINDINGS_NOTE_NAME);
+                            
+                            result
                         }
                         _ => {
-                            // Ya hay otras notas, no crear bienvenida
+                            // Ya hay otras notas
+                            // Si el onboarding no está completo, crear nota de atajos
+                            if !onboarding_completed {
+                                create_keybindings_note(notes_dir, notes_config, KEYBINDINGS_NOTE_NAME);
+                            }
+                            
                             println!(
                                 "Nota de bienvenida no existe y hay otras notas, iniciando vacío"
                             );
@@ -2341,9 +2431,12 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             floating_search_results_list: widgets.floating_search_results_list.clone(),
             floating_search_rows: Rc::new(RefCell::new(Vec::new())),
             floating_search_visible: false,
-            floating_search_in_current_note: false,
+            floating_search_in_current_note: Rc::new(RefCell::new(false)),
+            in_note_search_matches: Rc::new(RefCell::new(Vec::new())),
+            in_note_search_current_index: Rc::new(RefCell::new(0)),
             semantic_search_enabled: false,
             semantic_search_timeout_id: Rc::new(RefCell::new(None)),
+            traditional_search_timeout_id: Rc::new(RefCell::new(None)),
             semantic_search_answer_box: {
                 // PRIMERO crear el box
                 let answer_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -2470,6 +2563,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             reminders_list,
             reminders_pending_badge,
             note_memory: Rc::new(RefCell::new(None)),
+            quick_note_window: Rc::new(RefCell::new(None)),
         };
 
         // Guardar el sender en el modelo
@@ -3866,8 +3960,12 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         let floating_results_for_nav = model.floating_search_results_list.clone();
         let floating_scroll_for_nav = model.floating_search_results.clone();
         let floating_rows_for_nav = model.floating_search_rows.clone();
+        let floating_in_current_note = model.floating_search_in_current_note.clone();
 
-        floating_key_controller.connect_key_pressed(move |_controller, keyval, _keycode, _modifiers| {
+        floating_key_controller.connect_key_pressed(move |_controller, keyval, _keycode, modifiers| {
+            let shift_pressed = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            let in_current_note = *floating_in_current_note.borrow();
+            
             match keyval {
                 // Cambiar modo de búsqueda con Control
                 gtk::gdk::Key::Control_L | gtk::gdk::Key::Control_R => {
@@ -3929,8 +4027,19 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     return gtk::glib::Propagation::Stop;
                 }
                 gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
-                    // Cargar la nota seleccionada o la primera si no hay selección
-                    // El modo (global vs en-nota) se maneja en LoadNoteFromFloatingSearch
+                    // Shift+Enter: ir a coincidencia anterior (solo en modo búsqueda en nota)
+                    if shift_pressed {
+                        sender_for_floating_key.input(AppMsg::InNoteSearchPrev);
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    
+                    // Enter normal en modo búsqueda en nota: ir a siguiente coincidencia
+                    if in_current_note {
+                        sender_for_floating_key.input(AppMsg::InNoteSearchNext);
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    
+                    // Enter normal en modo global: cargar la nota seleccionada
                     let row_to_load = floating_results_for_nav.selected_row()
                         .or_else(|| {
                             floating_rows_for_nav
@@ -3946,16 +4055,8 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         };
 
                         if let Some(name) = note_name {
-                            println!("🔍 Enter presionado, enviando LoadNoteFromFloatingSearch: '{}'", name);
                             sender_for_floating_key.input(AppMsg::LoadNoteFromFloatingSearch(name));
-                        } else {
-                            println!("⚠️ Enter presionado pero no se encontró note_name en la fila");
                         }
-                    } else {
-                        // Si no hay resultados, enviar señal con string vacío
-                        // Esto manejará el caso de búsqueda en nota actual
-                        println!("🔍 Enter presionado sin resultados, modo búsqueda directa");
-                        sender_for_floating_key.input(AppMsg::LoadNoteFromFloatingSearch(String::new()));
                     }
                     return gtk::glib::Propagation::Stop;
                 }
@@ -3966,6 +4067,17 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         model
             .floating_search_entry
             .add_controller(floating_key_controller);
+
+        // Handler de activación (Enter) para el SearchEntry
+        // Esto captura Enter cuando el SearchEntry lo procesa internamente
+        let sender_for_activate = sender.clone();
+        let floating_in_current_note_for_activate = model.floating_search_in_current_note.clone();
+        model.floating_search_entry.connect_activate(move |_entry| {
+            let in_current_note = *floating_in_current_note_for_activate.borrow();
+            if in_current_note {
+                sender_for_activate.input(AppMsg::InNoteSearchNext);
+            }
+        });
 
         // Handler de activación de resultados en la barra flotante
         let floating_results_clone = model.floating_search_results_list.clone();
@@ -4163,6 +4275,21 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
         // Sincronizar estado de autostart (asegurar que el archivo .desktop exista si está habilitado)
         if let Err(e) = Self::manage_autostart(start_in_background) {
             eprintln!("Error sincronizando autostart al inicio: {}", e);
+        }
+
+        // Actualizar tooltips según el idioma actual al inicio
+        {
+            let i18n = model.i18n.borrow();
+            model.sidebar_toggle_button.set_tooltip_text(Some(&i18n.t("show_hide_notes")));
+            model.search_toggle_button.set_tooltip_text(Some(&i18n.t("search_notes")));
+            model.new_note_button.set_tooltip_text(Some(&i18n.t("new_note")));
+            model.settings_button.set_tooltip_text(Some(&i18n.t("settings")));
+            model.tags_menu_button.set_tooltip_text(Some(&i18n.t("tags_note")));
+            model.todos_menu_button.set_tooltip_text(Some(&i18n.t("todos_note")));
+            model.music_player_button.set_tooltip_text(Some(&i18n.t("music_player")));
+            model.reminders_button.set_tooltip_text(Some(&i18n.t("reminder_tooltip")));
+            model.sidebar_notes_label.set_label(&i18n.t("notes"));
+            model.floating_search_entry.set_placeholder_text(Some(&i18n.t("search_placeholder")));
         }
 
         ComponentParts { model, widgets }
@@ -4404,13 +4531,19 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     self.floating_search_visible = false;
                     self.floating_search_bar.set_visible(false);
 
-                    // Limpiar resultados
+                    // Limpiar resultados (preservando semantic_search_answer_row)
+                    let answer_row_ptr = self.semantic_search_answer_row.as_ptr();
                     let mut child = self.floating_search_results_list.first_child();
                     while let Some(widget) = child {
                         let next = widget.next_sibling();
-                        self.floating_search_results_list.remove(&widget);
+                        // No eliminar el semantic_search_answer_row
+                        if widget.as_ptr() != answer_row_ptr as *mut _ {
+                            self.floating_search_results_list.remove(&widget);
+                        }
                         child = next;
                     }
+                    // Ocultar el answer_row pero mantenerlo en el árbol
+                    self.semantic_search_answer_row.set_visible(false);
 
                     // Devolver foco al editor
                     self.text_view.grab_focus();
@@ -5159,6 +5292,44 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 std::process::exit(0);
             }
 
+            AppMsg::ToggleQuickNote => {
+                println!("📝 Toggle Quick Note...");
+                
+                // Crear ventana si no existe
+                if self.quick_note_window.borrow().is_none() {
+                    let qn_window = crate::quick_note::QuickNoteWindow::new(
+                        &self.main_window,
+                        self.notes_dir.clone(),
+                        self.i18n.clone(),
+                    );
+                    *self.quick_note_window.borrow_mut() = Some(qn_window);
+                }
+                
+                // Toggle visibilidad
+                if let Some(ref qn) = *self.quick_note_window.borrow() {
+                    qn.toggle();
+                }
+            }
+
+            AppMsg::NewQuickNote => {
+                println!("📝 Nueva Quick Note...");
+                
+                // Crear ventana si no existe
+                if self.quick_note_window.borrow().is_none() {
+                    let qn_window = crate::quick_note::QuickNoteWindow::new(
+                        &self.main_window,
+                        self.notes_dir.clone(),
+                        self.i18n.clone(),
+                    );
+                    *self.quick_note_window.borrow_mut() = Some(qn_window);
+                }
+                
+                // Crear y abrir nueva nota
+                if let Some(ref qn) = *self.quick_note_window.borrow() {
+                    qn.new_note();
+                }
+            }
+
             AppMsg::NewChatSession => {
                 println!("✨ Iniciando nueva sesión de chat...");
 
@@ -5231,12 +5402,12 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
                 // Mostrar notificación al usuario
                 let notification_text = if new_mode {
-                    "Modo Agente activado\nEl asistente puede buscar en notas y ejecutar acciones"
+                    self.i18n.borrow().t("agent_mode_activated")
                 } else {
-                    "Chat Normal activado\nConversación directa sin acceso a herramientas"
+                    self.i18n.borrow().t("chat_mode_activated")
                 };
 
-                self.show_notification(notification_text);
+                self.show_notification(&notification_text);
             }
 
             AppMsg::CheckMCPUpdates => {
@@ -5752,7 +5923,7 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
             AppMsg::ToggleFloatingSearch => {
                 self.floating_search_visible = !self.floating_search_visible;
-                self.floating_search_in_current_note = false; // Búsqueda global
+                *self.floating_search_in_current_note.borrow_mut() = false; // Búsqueda global
                 self.floating_search_bar
                     .set_visible(self.floating_search_visible);
 
@@ -5787,13 +5958,19 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     );
                 } else {
                     self.floating_search_rows.borrow_mut().clear();
-                    // Limpiar resultados al cerrar
+                    // Limpiar resultados al cerrar (preservando semantic_search_answer_row)
+                    let answer_row_ptr = self.semantic_search_answer_row.as_ptr();
                     let mut child = self.floating_search_results_list.first_child();
                     while let Some(widget) = child {
                         let next = widget.next_sibling();
-                        self.floating_search_results_list.remove(&widget);
+                        // No eliminar el semantic_search_answer_row
+                        if widget.as_ptr() != answer_row_ptr as *mut _ {
+                            self.floating_search_results_list.remove(&widget);
+                        }
                         child = next;
                     }
+                    // Ocultar el answer_row pero mantenerlo en el árbol
+                    self.semantic_search_answer_row.set_visible(false);
 
                     // Devolver foco al editor
                     self.text_view.grab_focus();
@@ -5811,9 +5988,14 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
 
                 // Abrir buscador simple sin resultados (solo input para buscar y saltar)
                 self.floating_search_visible = !self.floating_search_visible;
-                self.floating_search_in_current_note = true;
+                *self.floating_search_in_current_note.borrow_mut() = true;
 
                 if self.floating_search_visible {
+                    // Cambiar a modo Insert para buscar en el texto markdown puro
+                    if *self.mode.borrow() == EditorMode::Normal {
+                        sender.input(AppMsg::ProcessAction(EditorAction::ChangeMode(EditorMode::Insert)));
+                    }
+                    
                     self.floating_search_rows.borrow_mut().clear();
                     // Ocultar la lista de resultados en este modo
                     self.floating_search_results.set_visible(false);
@@ -5841,6 +6023,20 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                     );
                 } else {
                     self.floating_search_rows.borrow_mut().clear();
+                    // Limpiar coincidencias de búsqueda en nota
+                    self.in_note_search_matches.borrow_mut().clear();
+                    *self.in_note_search_current_index.borrow_mut() = 0;
+                    // Limpiar resaltados
+                    self.text_buffer.remove_tag_by_name(
+                        "search-highlight",
+                        &self.text_buffer.start_iter(),
+                        &self.text_buffer.end_iter(),
+                    );
+                    self.text_buffer.remove_tag_by_name(
+                        "search-highlight-current",
+                        &self.text_buffer.start_iter(),
+                        &self.text_buffer.end_iter(),
+                    );
                     // Al cerrar, restaurar visibilidad de resultados para modo global
                     self.floating_search_bar.set_visible(false);
                     self.floating_search_results.set_visible(true);
@@ -5848,10 +6044,18 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                 }
             }
 
+            AppMsg::InNoteSearchNext => {
+                self.go_to_next_match();
+            }
+
+            AppMsg::InNoteSearchPrev => {
+                self.go_to_prev_match();
+            }
+
             AppMsg::FloatingSearchNotes(query) => {
                 if !query.is_empty() {
                     // Si estamos en modo búsqueda en nota actual, resaltar y hacer scroll
-                    if self.floating_search_in_current_note {
+                    if *self.floating_search_in_current_note.borrow() {
                         // Resaltar y hacer scroll al texto mientras se escribe
                         self.highlight_and_scroll_to_text(&query);
                         return;
@@ -5885,39 +6089,64 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         );
                         *self.semantic_search_timeout_id.borrow_mut() = Some(id);
                     } else {
-                        // Modo normal: búsqueda inmediata
-                        let current_text = self.floating_search_entry.text();
-                        if current_text.as_str() != query {
-                            self.floating_search_entry.set_text(&query);
+                        // Modo normal: búsqueda con debounce corto (150ms)
+                        // Cancelar timeout anterior si existe
+                        if let Some(id) = self.traditional_search_timeout_id.borrow_mut().take() {
+                            id.remove();
                         }
-                        self.perform_floating_search(&query, &sender);
+
+                        let sender_clone = sender.clone();
+                        let query_clone = query.clone();
+                        let timeout_id_ref = self.traditional_search_timeout_id.clone();
+
+                        let id = gtk::glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(150),
+                            move || {
+                                sender_clone.input(AppMsg::PerformFloatingSearch(query_clone));
+                                timeout_id_ref.borrow_mut().take();
+                            },
+                        );
+                        *self.traditional_search_timeout_id.borrow_mut() = Some(id);
                     }
                 } else {
                     // Limpiar resultados si el query está vacío
-                    // Cancelar timeout pendiente si existe
+                    // Cancelar timeouts pendientes si existen
                     if let Some(id) = self.semantic_search_timeout_id.borrow_mut().take() {
+                        id.remove();
+                    }
+                    if let Some(id) = self.traditional_search_timeout_id.borrow_mut().take() {
                         id.remove();
                     }
 
                     self.floating_search_rows.borrow_mut().clear();
+                    // Limpiar resultados (preservando semantic_search_answer_row)
+                    let answer_row_ptr = self.semantic_search_answer_row.as_ptr();
                     let mut child = self.floating_search_results_list.first_child();
                     while let Some(widget) = child {
                         let next = widget.next_sibling();
-                        self.floating_search_results_list.remove(&widget);
+                        if widget.as_ptr() != answer_row_ptr as *mut _ {
+                            self.floating_search_results_list.remove(&widget);
+                        }
                         child = next;
                     }
+                    self.semantic_search_answer_row.set_visible(false);
                 }
             }
 
             AppMsg::PerformFloatingSearch(query) => {
                 // Mostrar indicador de "Buscando..." mientras se ejecuta la búsqueda
                 self.floating_search_rows.borrow_mut().clear();
+                // Limpiar resultados (preservando semantic_search_answer_row)
+                let answer_row_ptr = self.semantic_search_answer_row.as_ptr();
                 let mut child = self.floating_search_results_list.first_child();
                 while let Some(widget) = child {
                     let next = widget.next_sibling();
-                    self.floating_search_results_list.remove(&widget);
+                    if widget.as_ptr() != answer_row_ptr as *mut _ {
+                        self.floating_search_results_list.remove(&widget);
+                    }
                     child = next;
                 }
+                self.semantic_search_answer_row.set_visible(false);
 
                 let searching_label = gtk::Label::builder()
                     .label("🔍 Buscando...")
@@ -5953,32 +6182,13 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
             }
 
             AppMsg::LoadNoteFromFloatingSearch(name) => {
-                println!(
-                    "📖 LoadNoteFromFloatingSearch recibido: '{}', modo in_current_note: {}",
-                    name, self.floating_search_in_current_note
-                );
-
-                // Si estamos en modo búsqueda dentro de la nota, buscar y saltar
-                if self.floating_search_in_current_note {
-                    let query = self.floating_search_entry.text().to_string();
-                    println!(
-                        "  → Modo búsqueda en nota actual, buscando y saltando a: '{}'",
-                        query
-                    );
-
-                    if !query.is_empty() {
-                        self.highlight_and_scroll_to_text(&query);
-                        // Cerrar el buscador y volver al editor
-                        self.floating_search_visible = false;
-                        self.floating_search_bar.set_visible(false);
-                        self.floating_search_results.set_visible(true);
-                        self.text_view.grab_focus();
-                    } else {
-                        self.show_notification("⚠️ No hay texto para buscar");
-                    }
+                // Si estamos en modo búsqueda dentro de la nota, ir a siguiente coincidencia
+                if *self.floating_search_in_current_note.borrow() {
+                    // El Enter en modo búsqueda en nota va a la siguiente coincidencia
+                    // (El Shift+Enter se maneja por separado con InNoteSearchPrev)
+                    self.go_to_next_match();
                 } else {
                     // Búsqueda global: cerrar buscador y cargar la nota
-                    println!("  → Modo búsqueda global, cargando nota: '{}'", name);
                     self.floating_search_visible = false;
                     self.floating_search_bar.set_visible(false);
 
@@ -7257,7 +7467,8 @@ Las notas se guardan automáticamente en: ~/.local/share/notnative/notes/
                         println!("🤖 Usando RouterAgent (sistema multi-agente)");
 
                         // Mostrar indicador de análisis
-                        self.append_chat_typing_indicator("Analizando tarea...");
+                        let analyzing_text = self.i18n.borrow().t("analyzing_task");
+                        self.append_chat_typing_indicator(&analyzing_text);
 
                         let router_agent = self.router_agent.clone();
                         let sender_clone = sender.clone();
@@ -9761,138 +9972,228 @@ impl MainApp {
     }
 
     /// Resalta texto en el editor y hace scroll hasta él
+    /// Encuentra TODAS las coincidencias y permite navegar entre ellas
     fn highlight_and_scroll_to_text(&self, search_text: &str) {
-        println!(
-            "🔍 DEBUG highlight_and_scroll_to_text: Buscando texto: '{}'",
-            &search_text[..search_text.len().min(100)]
-        );
-
-        let buffer = &self.text_buffer;
-        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
-        let text_lower = text.to_lowercase();
-        let search_lower = search_text.to_lowercase();
-
-        // Primero intentar buscar el texto completo
-        let mut found_position = text_lower.find(&search_lower);
-
-        // Si no se encuentra el texto completo, buscar por palabras clave
-        if found_position.is_none() {
-            println!("📄 DEBUG: Texto completo no encontrado, buscando por palabras clave");
-
-            // Extraer palabras clave significativas (más de 4 caracteres, sin símbolos)
-            let keywords: Vec<String> = search_text
-                .split(|c: char| {
-                    !c.is_alphanumeric()
-                        && c != 'á'
-                        && c != 'é'
-                        && c != 'í'
-                        && c != 'ó'
-                        && c != 'ú'
-                        && c != 'ñ'
-                })
-                .filter(|word| word.len() > 4) // Solo palabras de más de 4 caracteres
-                .take(3) // Tomar las primeras 3 palabras
-                .map(|s| s.to_lowercase())
-                .collect();
-
-            if keywords.is_empty() {
-                println!("⚠️ DEBUG: No se pudieron extraer palabras clave del snippet");
-                return;
-            }
-
-            println!("🔑 DEBUG: Palabras clave extraídas: {:?}", keywords);
-
-            // Buscar la primera palabra clave en el texto
-            for keyword in &keywords {
-                if let Some(pos) = text_lower.find(keyword) {
-                    println!(
-                        "✅ DEBUG: Palabra clave '{}' encontrada en posición {}",
-                        keyword, pos
-                    );
-                    found_position = Some(pos);
-                    break;
-                }
-            }
-        } else {
-            println!(
-                "✅ DEBUG: Texto completo encontrado en posición {}",
-                found_position.unwrap()
+        if search_text.is_empty() {
+            // Limpiar coincidencias si el texto está vacío
+            self.in_note_search_matches.borrow_mut().clear();
+            *self.in_note_search_current_index.borrow_mut() = 0;
+            self.text_buffer.remove_tag_by_name(
+                "search-highlight",
+                &self.text_buffer.start_iter(),
+                &self.text_buffer.end_iter(),
             );
+            self.text_buffer.remove_tag_by_name(
+                "search-highlight-current",
+                &self.text_buffer.start_iter(),
+                &self.text_buffer.end_iter(),
+            );
+            return;
         }
 
-        if let Some(pos) = found_position {
-            // Encontrar el inicio de la línea que contiene la palabra clave
-            let line_start = text[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let buffer = &self.text_buffer;
+        
+        // En modo Normal, el buffer contiene texto renderizado (sin markdown).
+        // Usamos el texto del buffer para buscar y resaltar.
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        let text_str = text.as_str();
+        
+        // Normalizar texto sin acentos para búsqueda
+        let text_normalized = Self::remove_accents(&text_str.to_lowercase());
+        let search_normalized = Self::remove_accents(&search_text.to_lowercase());
 
-            // Encontrar el final de la línea
-            let line_end = text[pos..]
-                .find('\n')
-                .map(|p| pos + p)
-                .unwrap_or(text.len());
+        // Encontrar TODAS las coincidencias (sin distinguir acentos)
+        let mut matches: Vec<(i32, i32)> = Vec::new();
+        let mut start_pos = 0;
+        
+        while let Some(pos) = text_normalized[start_pos..].find(&search_normalized) {
+            let absolute_pos = start_pos + pos;
+            // Convertir posición de bytes a offset de caracteres en texto normalizado
+            let char_start_normalized = text_normalized[..absolute_pos].chars().count();
+            // Como ambos textos tienen el mismo número de caracteres (solo cambian los acentos),
+            // la posición en caracteres es la misma
+            let char_start = char_start_normalized as i32;
+            let char_end = char_start + search_normalized.chars().count() as i32;
+            matches.push((char_start, char_end));
+            start_pos = absolute_pos + search_normalized.len();
+        }
 
-            let start_offset = text[..line_start].chars().count() as i32;
-            let end_offset = text[..line_end].chars().count() as i32;
+        println!(
+            "🔍 Búsqueda en nota: '{}' encontró {} coincidencias en buffer de {} chars",
+            search_text,
+            matches.len(),
+            text_str.chars().count()
+        );
 
-            println!(
-                "📍 DEBUG: Resaltando desde offset {} hasta {} (línea completa)",
-                start_offset, end_offset
-            );
+        // Actualizar el indicador de modo con el conteo de coincidencias
+        if !matches.is_empty() {
+            let current_idx = *self.in_note_search_current_index.borrow();
+            let display_idx = if current_idx < matches.len() { current_idx + 1 } else { 1 };
+            self.floating_search_mode_label.set_markup(&format!(
+                "<small>{}/{} (Enter: sig, Shift+Enter: ant)</small>",
+                display_idx,
+                matches.len()
+            ));
+        } else {
+            self.floating_search_mode_label.set_markup("<small>Sin coincidencias</small>");
+        }
 
-            // Crear iteradores para el rango a resaltar
+        // Guardar las coincidencias
+        let previous_matches = self.in_note_search_matches.borrow().clone();
+        *self.in_note_search_matches.borrow_mut() = matches.clone();
+
+        // Si el texto de búsqueda cambió, reiniciar el índice
+        if previous_matches != matches {
+            *self.in_note_search_current_index.borrow_mut() = 0;
+        }
+
+        if matches.is_empty() {
+            // Limpiar resaltados si no hay coincidencias
+            buffer.remove_tag_by_name("search-highlight", &buffer.start_iter(), &buffer.end_iter());
+            buffer.remove_tag_by_name("search-highlight-current", &buffer.start_iter(), &buffer.end_iter());
+            return;
+        }
+
+        // Crear o obtener tags de resaltado
+        let tag_table = buffer.tag_table();
+        
+        // Tag para todas las coincidencias (resaltado suave)
+        let tag_all = if let Some(existing_tag) = tag_table.lookup("search-highlight") {
+            existing_tag
+        } else {
+            let new_tag = gtk::TextTag::new(Some("search-highlight"));
+            new_tag.set_background(Some("#4a4a00")); // Amarillo oscuro para coincidencias no actuales
+            tag_table.add(&new_tag);
+            new_tag
+        };
+
+        // Tag para la coincidencia actual (resaltado brillante)
+        let tag_current = if let Some(existing_tag) = tag_table.lookup("search-highlight-current") {
+            existing_tag
+        } else {
+            let new_tag = gtk::TextTag::new(Some("search-highlight-current"));
+            new_tag.set_background(Some("#ffd700")); // Amarillo dorado brillante
+            new_tag.set_foreground(Some("#000000")); // Texto negro
+            tag_table.add(&new_tag);
+            new_tag
+        };
+
+        // Limpiar resaltados previos
+        buffer.remove_tag_by_name("search-highlight", &buffer.start_iter(), &buffer.end_iter());
+        buffer.remove_tag_by_name("search-highlight-current", &buffer.start_iter(), &buffer.end_iter());
+
+        // Aplicar resaltado a todas las coincidencias
+        for (start, end) in &matches {
             let mut start_iter = buffer.start_iter();
             let mut end_iter = buffer.start_iter();
-            start_iter.set_offset(start_offset);
-            end_iter.set_offset(end_offset);
+            start_iter.set_offset(*start);
+            end_iter.set_offset(*end);
+            buffer.apply_tag(&tag_all, &start_iter, &end_iter);
+        }
 
-            // Crear o obtener tag de resaltado
-            let tag_table = buffer.tag_table();
-            let tag = if let Some(existing_tag) = tag_table.lookup("search-highlight") {
-                existing_tag
-            } else {
-                let new_tag = gtk::TextTag::new(Some("search-highlight"));
-                new_tag.set_background(Some("#ffd700")); // Amarillo dorado
-                new_tag.set_foreground(Some("#000000")); // Texto negro
-                tag_table.add(&new_tag);
-                new_tag
-            };
+        // Resaltar la coincidencia actual con color más brillante
+        self.highlight_current_match();
+    }
 
-            // Limpiar resaltados previos
-            buffer.remove_tag_by_name("search-highlight", &buffer.start_iter(), &buffer.end_iter());
+    /// Resalta la coincidencia actual y hace scroll hasta ella
+    fn highlight_current_match(&self) {
+        let matches = self.in_note_search_matches.borrow();
+        let current_index = *self.in_note_search_current_index.borrow();
 
-            // Aplicar resaltado
-            buffer.apply_tag(&tag, &start_iter, &end_iter);
+        if matches.is_empty() || current_index >= matches.len() {
+            return;
+        }
 
-            // Mover cursor al inicio del texto resaltado
+        let (start, end) = matches[current_index];
+        let buffer = &self.text_buffer;
+
+        // Actualizar indicador de posición
+        self.floating_search_mode_label.set_markup(&format!(
+            "<small>{}/{} (Enter: sig, Shift+Enter: ant)</small>",
+            current_index + 1,
+            matches.len()
+        ));
+
+        // Quitar resaltado actual anterior
+        buffer.remove_tag_by_name("search-highlight-current", &buffer.start_iter(), &buffer.end_iter());
+
+        // Obtener tag de resaltado actual
+        let tag_table = buffer.tag_table();
+        if let Some(tag_current) = tag_table.lookup("search-highlight-current") {
+            let mut start_iter = buffer.start_iter();
+            let mut end_iter = buffer.start_iter();
+            start_iter.set_offset(start);
+            end_iter.set_offset(end);
+            buffer.apply_tag(&tag_current, &start_iter, &end_iter);
+
+            // Mover cursor y hacer scroll
             buffer.place_cursor(&start_iter);
-
-            // Primero hacer scroll inmediato al cursor
-            let text_view_for_immediate = self.text_view.clone();
-            text_view_for_immediate.scroll_mark_onscreen(&buffer.get_insert());
-
-            // Luego hacer scroll preciso con delay para dar tiempo al renderizado completo
+            
             let text_view = self.text_view.clone();
             gtk::glib::timeout_add_local_once(
-                std::time::Duration::from_millis(100), // Reducido para mejor respuesta
+                std::time::Duration::from_millis(50),
                 move || {
                     let buffer = text_view.buffer();
                     let insert_mark = buffer.get_insert();
-                    // Hacer scroll con el texto al 30% de la altura visible
-                    text_view.scroll_to_mark(&insert_mark, 0.0, true, 0.0, 0.3);
+                    text_view.scroll_to_mark(&insert_mark, 0.1, true, 0.0, 0.4);
                 },
             );
-
-            // Quitar el resaltado después de 3 segundos
-            let buffer_clone = buffer.clone();
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-                buffer_clone.remove_tag_by_name(
-                    "search-highlight",
-                    &buffer_clone.start_iter(),
-                    &buffer_clone.end_iter(),
-                );
-            });
-        } else {
-            println!("❌ DEBUG: Texto no encontrado en el buffer");
         }
+    }
+
+    /// Elimina acentos de un texto para búsqueda sin distinción de acentos
+    fn remove_accents(text: &str) -> String {
+        text.chars()
+            .map(|c| match c {
+                'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+                'é' | 'è' | 'ë' | 'ê' => 'e',
+                'í' | 'ì' | 'ï' | 'î' => 'i',
+                'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+                'ú' | 'ù' | 'ü' | 'û' => 'u',
+                'ñ' => 'n',
+                'ç' => 'c',
+                'Á' | 'À' | 'Ä' | 'Â' | 'Ã' => 'a',
+                'É' | 'È' | 'Ë' | 'Ê' => 'e',
+                'Í' | 'Ì' | 'Ï' | 'Î' => 'i',
+                'Ó' | 'Ò' | 'Ö' | 'Ô' | 'Õ' => 'o',
+                'Ú' | 'Ù' | 'Ü' | 'Û' => 'u',
+                'Ñ' => 'n',
+                'Ç' => 'c',
+                _ => c,
+            })
+            .collect()
+    }
+
+    /// Ir a la siguiente coincidencia en búsqueda dentro de nota
+    fn go_to_next_match(&self) {
+        let matches_len = self.in_note_search_matches.borrow().len();
+        if matches_len == 0 {
+            return;
+        }
+
+        let mut current_index = self.in_note_search_current_index.borrow_mut();
+        *current_index = (*current_index + 1) % matches_len;
+        drop(current_index);
+
+        self.highlight_current_match();
+    }
+
+    /// Ir a la anterior coincidencia en búsqueda dentro de nota
+    fn go_to_prev_match(&self) {
+        let matches_len = self.in_note_search_matches.borrow().len();
+        if matches_len == 0 {
+            return;
+        }
+
+        let mut current_index = self.in_note_search_current_index.borrow_mut();
+        if *current_index == 0 {
+            *current_index = matches_len - 1;
+        } else {
+            *current_index -= 1;
+        }
+        drop(current_index);
+
+        self.highlight_current_match();
     }
 
     /// Hace scroll para que el cursor sea visible (NO USAR - scroll se hace en sync_to_view)
@@ -14432,20 +14733,20 @@ impl MainApp {
         self.semantic_search_answer_row.set_visible(false);
         *self.semantic_search_answer_visible.borrow_mut() = false;
 
-        // Limpiar lista actual (pero mantener el answer_box que está al inicio)
-        let answer_box_ptr = self.semantic_search_answer_box.as_ptr();
+        // Limpiar lista actual (pero mantener el semantic_search_answer_row)
+        let answer_row_ptr = self.semantic_search_answer_row.as_ptr();
         let mut child = self.floating_search_results_list.first_child();
         while let Some(widget) = child {
             let next = widget.next_sibling();
-            // No eliminar el answer_box
-            if widget.as_ptr() != answer_box_ptr as *mut _ {
+            // No eliminar el semantic_search_answer_row
+            if widget.as_ptr() != answer_row_ptr as *mut _ {
                 self.floating_search_results_list.remove(&widget);
             }
             child = next;
         }
 
         // Si estamos en modo "buscar en nota actual", filtrar solo esa nota
-        let current_note_filter = if self.floating_search_in_current_note {
+        let current_note_filter = if *self.floating_search_in_current_note.borrow() {
             self.current_note.as_ref().map(|n| {
                 let name = n.name();
                 println!("🔍 Filtrando por nota actual: '{}'", name);
@@ -14495,7 +14796,7 @@ impl MainApp {
         let has_semantic_results = !semantic_results.is_empty();
 
         // Si hay resultados semánticos, invocar al agente de IA para generar una respuesta
-        if has_semantic_results && !self.floating_search_in_current_note {
+        if has_semantic_results && !*self.floating_search_in_current_note.borrow() {
             // Clonar datos necesarios para el mensaje async
             let query_clone = query.to_string();
             let results_clone = semantic_results.clone();
@@ -14570,7 +14871,7 @@ impl MainApp {
 
         if combined_results.is_empty() {
             // Mostrar mensaje de sin resultados
-            let message = if self.floating_search_in_current_note {
+            let message = if *self.floating_search_in_current_note.borrow() {
                 format!("No se encontraron resultados para '{}' en esta nota", query)
             } else {
                 format!("No se encontraron resultados para '{}'", query)
@@ -14858,6 +15159,12 @@ impl MainApp {
                 for entry in entries.flatten() {
                     if let Ok(metadata) = entry.metadata() {
                         if metadata.is_dir() {
+                            // Ignorar carpetas ocultas (que empiezan con '.')
+                            if let Some(name) = entry.file_name().to_str() {
+                                if name.starts_with('.') {
+                                    continue;
+                                }
+                            }
                             if let Ok(relative) = entry.path().strip_prefix(root) {
                                 if let Some(folder_name) = relative.to_str() {
                                     if !folders_list.contains(&folder_name.to_string()) {
@@ -16220,14 +16527,14 @@ impl MainApp {
             .build();
 
         let model_label = gtk::Label::builder()
-            .label("Modelo:")
+            .label(&i18n.t("model_label"))
             .halign(gtk::Align::Start)
             .width_chars(12)
             .build();
 
         let refresh_models_btn = gtk::Button::builder()
             .label("🔄")
-            .tooltip_text("Actualizar lista de modelos desde OpenRouter")
+            .tooltip_text(&i18n.t("refresh_models_tooltip"))
             .build();
         refresh_models_btn.add_css_class("flat");
         refresh_models_btn.add_css_class("circular");
@@ -16238,7 +16545,7 @@ impl MainApp {
 
         // Buscador de modelos
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Buscar modelo...")
+            .placeholder_text(&i18n.t("search_model_placeholder"))
             .build();
         model_box.append(&search_entry);
 
@@ -16641,7 +16948,7 @@ impl MainApp {
             .build();
 
         let temp_label = gtk::Label::builder()
-            .label("Temperatura:")
+            .label(&i18n.t("temperature_label"))
             .halign(gtk::Align::Start)
             .width_chars(12)
             .build();
@@ -16678,12 +16985,12 @@ impl MainApp {
             .build();
 
         let tokens_label = gtk::Label::builder()
-            .label("Max Tokens:")
+            .label(&i18n.t("max_tokens_label"))
             .halign(gtk::Align::Start)
             .width_chars(12)
             .build();
 
-        let unlimited_check = gtk::CheckButton::builder().label("Unlimited").build();
+        let unlimited_check = gtk::CheckButton::builder().label(&i18n.t("unlimited")).build();
 
         tokens_header.append(&tokens_label);
         tokens_header.append(&unlimited_check);
@@ -16762,7 +17069,7 @@ impl MainApp {
             .build();
 
         let history_label = gtk::Label::builder()
-            .label("Guardar historial:")
+            .label(&i18n.t("save_history_label"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -16795,16 +17102,14 @@ impl MainApp {
             .build();
 
         let embeddings_label = gtk::Label::builder()
-            .label("🧠 Búsqueda Semántica (Embeddings)")
+            .label(&i18n.t("semantic_search_title"))
             .halign(gtk::Align::Start)
             .build();
         embeddings_label.add_css_class("heading");
         embeddings_box.append(&embeddings_label);
 
         let embeddings_description = gtk::Label::builder()
-            .label(
-                "Configura embeddings para búsqueda por significado conceptual usando OpenRouter",
-            )
+            .label(&i18n.t("semantic_search_description"))
             .halign(gtk::Align::Start)
             .wrap(true)
             .build();
@@ -16818,7 +17123,7 @@ impl MainApp {
             .build();
 
         let enable_label = gtk::Label::builder()
-            .label("Habilitar embeddings:")
+            .label(&i18n.t("enable_embeddings"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -16890,7 +17195,7 @@ impl MainApp {
             .build();
 
         let emb_model_label = gtk::Label::builder()
-            .label("Modelo:")
+            .label(&i18n.t("model_label"))
             .halign(gtk::Align::Start)
             .width_chars(12)
             .build();
@@ -16934,7 +17239,7 @@ impl MainApp {
             .build();
 
         let index_button = gtk::Button::builder()
-            .label("🔄 Indexar todas las notas")
+            .label(&i18n.t("index_all_notes"))
             .hexpand(true)
             .build();
 
@@ -16949,11 +17254,12 @@ impl MainApp {
         let status_clone = index_status.clone();
         let button_clone = index_button.clone();
         let notes_config_data = self.notes_config.borrow().clone(); // Clonar el contenido, no el Rc
+        let t_indexing = i18n.t("indexing");
 
         index_button.connect_clicked(move |_| {
             // Deshabilitar botón durante indexación
             button_clone.set_sensitive(false);
-            status_clone.set_label("⏳ Indexando...");
+            status_clone.set_label(&t_indexing);
 
             // Ejecutar indexación en segundo plano
             let sender_task = sender_clone.clone();
@@ -17038,7 +17344,7 @@ impl MainApp {
         let info_icon = gtk::Label::builder().label("💡").build();
 
         let info_text = gtk::Label::builder()
-            .label("Costo estimado: ~$0.01 por 10,000 notas")
+            .label(&i18n.t("estimated_cost"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .wrap(true)
@@ -17049,8 +17355,9 @@ impl MainApp {
         info_icon_box.append(&info_text);
         info_box.append(&info_icon_box);
 
+        let link_text = i18n.t("get_api_key_openrouter");
         let link_label = gtk::Label::builder()
-            .label("<a href='https://openrouter.ai'>Obtener API key en OpenRouter</a>")
+            .label(&format!("<a href='https://openrouter.ai'>{}</a>", link_text))
             .use_markup(true)
             .halign(gtk::Align::Start)
             .build();
@@ -17445,7 +17752,7 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .program_name("NotNative")
-            .version("0.1.8")
+            .version("0.1.11")
             .comments(&i18n.t("app_description"))
             .website("https://github.com/k4ditano/notnative-app")
             .website_label(&i18n.t("website"))
@@ -17704,6 +18011,10 @@ impl MainApp {
             .set_tooltip_text(Some(&i18n.t("tags_note")));
         self.todos_menu_button
             .set_tooltip_text(Some(&i18n.t("todos_note")));
+        self.music_player_button
+            .set_tooltip_text(Some(&i18n.t("music_player")));
+        self.reminders_button
+            .set_tooltip_text(Some(&i18n.t("reminder_tooltip")));
 
         // Actualizar labels del sidebar
         self.sidebar_notes_label.set_label(&i18n.t("notes"));

@@ -31,6 +31,7 @@ mod file_watcher;
 mod i18n;
 mod mcp;
 mod music_player;
+mod quick_note;
 mod reminders;
 mod system_tray;
 mod youtube_server;

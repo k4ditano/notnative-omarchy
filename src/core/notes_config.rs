@@ -93,6 +93,9 @@ pub struct NotesConfig {
     /// Configuración de embeddings para búsqueda semántica
     #[serde(default)]
     pub embedding_config: EmbeddingConfig,
+    /// Flag para saber si ya se completó el onboarding (crear nota de keybindings)
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for NotesConfig {
@@ -114,6 +117,7 @@ impl NotesConfig {
             start_in_background: false,
             ai_config: AIConfig::default(),
             embedding_config: EmbeddingConfig::default(),
+            onboarding_completed: false,
         }
     }
 
@@ -368,5 +372,15 @@ impl NotesConfig {
             "text-embedding-3-large" => 3072,
             _ => 4096, // Por defecto qwen3
         };
+    }
+
+    /// Verifica si el onboarding (crear nota de keybindings) ya se completó
+    pub fn is_onboarding_completed(&self) -> bool {
+        self.onboarding_completed
+    }
+
+    /// Marca el onboarding como completado
+    pub fn set_onboarding_completed(&mut self, completed: bool) {
+        self.onboarding_completed = completed;
     }
 }

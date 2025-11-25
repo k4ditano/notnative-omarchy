@@ -97,7 +97,7 @@ impl std::fmt::Debug for NotesDatabase {
 
 impl NotesDatabase {
     /// Versión actual del esquema
-    const SCHEMA_VERSION: i32 = 4;
+    const SCHEMA_VERSION: i32 = 5;
 
     /// Crear o abrir base de datos en la ruta especificada
     pub fn new(path: &Path) -> Result<Self> {
@@ -199,11 +199,11 @@ impl NotesDatabase {
                 FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
             );
 
-            -- Tabla virtual para full-text search
+            -- Tabla virtual para full-text search (unicode61 sin porter para búsqueda por prefijo exacta)
             CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
                 name,
                 content,
-                tokenize = 'porter unicode61'
+                tokenize = 'unicode61'
             );
 
             -- Índices para mejorar performance
@@ -299,6 +299,11 @@ impl NotesDatabase {
             // Migración v3 -> v4: Agregar tabla de recordatorios
             if current_version < 4 {
                 self.migrate_to_v4()?;
+            }
+
+            // Migración v4 -> v5: Recrear tabla FTS sin Porter (mejor búsqueda por prefijo)
+            if current_version < 5 {
+                self.migrate_to_v5()?;
             }
 
             println!(
@@ -439,6 +444,56 @@ impl NotesDatabase {
         // Actualizar versión
         self.conn
             .execute("REPLACE INTO schema_version (version) VALUES (4)", [])?;
+
+        Ok(())
+    }
+
+    /// Migración a versión 5: Recrear tabla FTS sin tokenizer Porter
+    /// El tokenizer Porter causa problemas con búsqueda por prefijo (ej: "key" no encuentra "keybindings")
+    fn migrate_to_v5(&mut self) -> Result<()> {
+        println!("Aplicando migración v5: Recreando tabla FTS sin Porter para mejor búsqueda por prefijo");
+
+        // 1. Obtener todos los datos actuales de la tabla FTS
+        let notes_data: Vec<(i64, String, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT rowid, name, content FROM notes_fts"
+            )?;
+            stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+
+        println!("  📦 Respaldando {} entradas de FTS", notes_data.len());
+
+        // 2. Eliminar la tabla FTS antigua
+        self.conn.execute("DROP TABLE IF EXISTS notes_fts", [])?;
+
+        // 3. Crear la nueva tabla FTS con unicode61 (sin Porter)
+        self.conn.execute_batch(
+            r#"
+            CREATE VIRTUAL TABLE notes_fts USING fts5(
+                name,
+                content,
+                tokenize = 'unicode61'
+            );
+            "#,
+        )?;
+
+        // 4. Reinsertar los datos
+        for (rowid, name, content) in &notes_data {
+            self.conn.execute(
+                "INSERT INTO notes_fts (rowid, name, content) VALUES (?1, ?2, ?3)",
+                params![rowid, name, content],
+            )?;
+        }
+
+        println!("  ✅ Tabla FTS recreada con {} entradas", notes_data.len());
+
+        // Actualizar versión
+        self.conn
+            .execute("REPLACE INTO schema_version (version) VALUES (5)", [])?;
 
         Ok(())
     }
@@ -816,7 +871,7 @@ impl NotesDatabase {
                 notes.id,
                 notes.name,
                 notes.path,
-                snippet(notes_fts, -1, '<mark>', '</mark>', '...', 32) as snippet,
+                snippet(notes_fts, -1, '<mark>', '</mark>', '...', 16) as snippet,
                 rank as relevance
             FROM notes_fts
             JOIN notes ON notes_fts.rowid = notes.id
@@ -826,11 +881,11 @@ impl NotesDatabase {
                   notes.folder NOT LIKE '.history%'
               ))
             ORDER BY rank
-            LIMIT 50
+            LIMIT 20
             "#,
         )?;
 
-        let results = stmt
+        let results: Vec<SearchResult> = stmt
             .query_map([&fts_query], |row| {
                 Ok(SearchResult {
                     note_id: row.get(0)?,
@@ -843,6 +898,45 @@ impl NotesDatabase {
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        // Si FTS5 no encontró resultados, intentar búsqueda LIKE como fallback
+        if results.is_empty() && query_text.len() >= 2 {
+            let like_pattern = format!("%{}%", query_text.to_lowercase());
+            let mut fallback_stmt = self.conn.prepare(
+                r#"
+                SELECT
+                    notes.id,
+                    notes.name,
+                    notes.path,
+                    substr(notes.content, 1, 100) as snippet,
+                    1.0 as relevance
+                FROM notes
+                WHERE (LOWER(notes.name) LIKE ?1 OR LOWER(notes.content) LIKE ?1)
+                  AND (notes.folder IS NULL OR (
+                      notes.folder NOT LIKE '.trash%' AND 
+                      notes.folder NOT LIKE '.history%'
+                  ))
+                ORDER BY notes.name
+                LIMIT 20
+                "#,
+            )?;
+
+            let fallback_results = fallback_stmt
+                .query_map([&like_pattern], |row| {
+                    Ok(SearchResult {
+                        note_id: row.get(0)?,
+                        note_name: row.get(1)?,
+                        note_path: row.get(2)?,
+                        snippet: row.get(3)?,
+                        relevance: row.get::<_, f64>(4)? as f32,
+                        matched_tags: vec![],
+                        similarity: None,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            return Ok(fallback_results);
+        }
 
         Ok(results)
     }
