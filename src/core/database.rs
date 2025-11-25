@@ -453,8 +453,18 @@ impl NotesDatabase {
     fn migrate_to_v5(&mut self) -> Result<()> {
         println!("Aplicando migración v5: Recreando tabla FTS sin Porter para mejor búsqueda por prefijo");
 
-        // 1. Obtener todos los datos actuales de la tabla FTS
-        let notes_data: Vec<(i64, String, String)> = {
+        // Verificar si la tabla notes_fts existe
+        let fts_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes_fts'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)?;
+
+        // 1. Obtener todos los datos actuales de la tabla FTS (solo si existe)
+        let notes_data: Vec<(i64, String, String)> = if fts_exists {
             let mut stmt = self.conn.prepare(
                 "SELECT rowid, name, content FROM notes_fts"
             )?;
@@ -463,11 +473,13 @@ impl NotesDatabase {
             })?
             .filter_map(|r| r.ok())
             .collect()
+        } else {
+            Vec::new()
         };
 
         println!("  📦 Respaldando {} entradas de FTS", notes_data.len());
 
-        // 2. Eliminar la tabla FTS antigua
+        // 2. Eliminar la tabla FTS antigua (si existe)
         self.conn.execute("DROP TABLE IF EXISTS notes_fts", [])?;
 
         // 3. Crear la nueva tabla FTS con unicode61 (sin Porter)
