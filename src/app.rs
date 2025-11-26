@@ -7,8 +7,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::core::{
-    CommandParser, EditorAction, EditorMode, KeyModifiers, MarkdownParser, NoteBuffer, NoteFile,
-    NotesConfig, NotesDatabase, NotesDirectory, SearchResult, StyleType, extract_all_tags,
+    CommandParser, EditorAction, EditorMode, HtmlRenderer, KeyModifiers, MarkdownParser,
+    NoteBuffer, NoteFile, NotesConfig, NotesDatabase, NotesDirectory, PreviewTheme, SearchResult,
+    StyleType, extract_all_tags,
 };
 use crate::i18n::{I18n, Language};
 use crate::mcp::{MCPToolCall, MCPToolResult};
@@ -115,6 +116,12 @@ pub struct MainApp {
     markdown_enabled: bool,
     bit8_mode: bool,
     text_view: gtk::TextView,
+    // WebView para preview HTML en modo Normal
+    preview_webview: webkit6::WebView,
+    editor_stack: gtk::Stack, // Stack para alternar entre TextView y WebView
+    editor_scroll: gtk::ScrolledWindow,
+    preview_scroll: gtk::ScrolledWindow,
+    preview_scroll_percent: Rc<RefCell<f64>>, // Porcentaje de scroll para sincronizar entre modos
     split_view: gtk::Paned,
     notes_list: gtk::ListBox,
     sidebar_visible: bool,
@@ -157,7 +164,7 @@ pub struct MainApp {
     // Para navegación entre coincidencias en búsqueda dentro de nota
     in_note_search_matches: Rc<RefCell<Vec<(i32, i32)>>>, // Vector de (start_offset, end_offset) de cada coincidencia
     in_note_search_current_index: Rc<RefCell<usize>>,     // Índice de la coincidencia actual
-    semantic_search_enabled: bool,         // Toggle para búsqueda semántica
+    semantic_search_enabled: bool,                        // Toggle para búsqueda semántica
     semantic_search_timeout_id: Rc<RefCell<Option<gtk::glib::SourceId>>>, // ID del timeout para debounce semántico
     traditional_search_timeout_id: Rc<RefCell<Option<gtk::glib::SourceId>>>, // ID del timeout para debounce tradicional
     semantic_search_answer_box: gtk::Box, // Box para mostrar la respuesta del agente
@@ -286,10 +293,10 @@ pub enum AppMsg {
     ShowWindow,           // Mostrar ventana desde bandeja
     QuitApp,              // Cerrar completamente la aplicación
     // Quick Notes - Ventana flotante
-    ToggleQuickNote,      // Mostrar/ocultar ventana de quick notes
-    NewQuickNote,         // Crear nueva quick note
-    ToggleChatMode,       // Alternar entre Modo Agente (con tools) y Chat Normal (sin tools)
-    NewChatSession,       // Iniciar nueva sesión de chat explícitamente
+    ToggleQuickNote, // Mostrar/ocultar ventana de quick notes
+    NewQuickNote,    // Crear nueva quick note
+    ToggleChatMode,  // Alternar entre Modo Agente (con tools) y Chat Normal (sin tools)
+    NewChatSession,  // Iniciar nueva sesión de chat explícitamente
     KeyPress {
         key: String,
         modifiers: KeyModifiers,
@@ -300,6 +307,9 @@ pub enum AppMsg {
     LoadNote {
         name: String,
         highlight_text: Option<String>, // Texto a resaltar después de cargar
+    },
+    LoadNoteFromSidebar {
+        name: String,
     },
     CreateNewNote(String),
     UpdateCursorPosition(usize),
@@ -343,6 +353,14 @@ pub enum AppMsg {
     InsertImage,                // Abrir diálogo para seleccionar imagen
     InsertImageFromPath(String), // Insertar imagen desde una ruta
     ProcessPastedText(String),  // Procesar texto pegado (puede ser URL de imagen o YouTube)
+    // WebView preview messages
+    ToggleTodoLine {
+        line: usize,
+        checked: bool,
+    }, // Toggle TODO checkbox desde WebView preview
+    SwitchToInsertAtLine {
+        line: usize,
+    }, // Cambiar a modo Insert en línea específica desde WebView
     ToggleTodo {
         line_number: usize,
         new_state: bool,
@@ -351,7 +369,7 @@ pub enum AppMsg {
         url: String,
         video_id: String,
     }, // Preguntar si transcribir video
-    InsertYouTubeLink(String),  // Insertar solo el enlace del video
+    InsertYouTubeLink(String), // Insertar solo el enlace del video
     InsertYouTubeWithTranscript {
         video_id: String,
     }, // Insertar video con transcripción
@@ -359,7 +377,7 @@ pub enum AppMsg {
         video_id: String,
         transcript: String,
     }, // Actualizar con transcripción obtenida
-    ScrollToAnchor(String),     // Hacer scroll a un heading por su ID (anchor link)
+    ScrollToAnchor(String),    // Hacer scroll a un heading por su ID (anchor link)
     MoveNoteToFolder {
         note_name: String,
         folder_name: Option<String>,
@@ -372,7 +390,7 @@ pub enum AppMsg {
         folder_name: String,
         target_folder: Option<String>,
     }, // Mover carpeta
-    CopyText(String),           // Copiar texto al portapapeles
+    CopyText(String),          // Copiar texto al portapapeles
     CreateNoteFromContent(String), // Crear nueva nota con contenido específico
     // Mensajes del reproductor de música
     ToggleMusicPlayer,                    // Abrir/cerrar el reproductor
@@ -849,21 +867,94 @@ impl SimpleComponent for MainApp {
             .editable(true)
             .cursor_visible(true)
             .accepts_tab(false)
-            .left_margin(16)
-            .right_margin(16)
-            .top_margin(12)
-            .bottom_margin(12)
+            .left_margin(24)
+            .right_margin(24)
+            .top_margin(24)
+            .bottom_margin(24)
+            .hexpand(true)
+            .vexpand(true)
             .build();
 
-        // Agregar el editor al Stack
+        // Contenedor centrado para el TextView (consistente con el modo Normal)
+        let editor_center_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        editor_center_box.set_hexpand(true);
+        editor_center_box.set_vexpand(true);
+
+        // Spacer izquierdo flexible
+        let left_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        left_spacer.set_hexpand(true);
+        editor_center_box.append(&left_spacer);
+
+        // Contenedor del TextView con ancho máximo (igual que max-width: 900px del CSS)
+        let editor_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        editor_container.set_width_request(900);
+        editor_container.set_hexpand(false);
+        editor_container.set_vexpand(true);
+        editor_container.append(&text_view_actual);
+        editor_center_box.append(&editor_container);
+
+        // Spacer derecho flexible
+        let right_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        right_spacer.set_hexpand(true);
+        editor_center_box.append(&right_spacer);
+
+        // Crear Stack para alternar entre editor (TextView) y preview (WebView)
+        let editor_stack = gtk::Stack::new();
+        editor_stack.set_hexpand(true);
+        editor_stack.set_vexpand(true);
+        editor_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        editor_stack.set_transition_duration(150);
+
+        // Agregar el editor (TextView) al Stack interno
         let editor_scroll = gtk::ScrolledWindow::new();
         editor_scroll.set_hexpand(true);
         editor_scroll.set_vexpand(true);
         editor_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-        editor_scroll.set_child(Some(&text_view_actual));
+        editor_scroll.set_child(Some(&editor_center_box));
+        editor_stack.add_named(&editor_scroll, Some("editor"));
+
+        // Crear WebView para preview HTML en modo Normal
+        use webkit6::prelude::WebViewExt;
+        let preview_webview = webkit6::WebView::new();
+        preview_webview.set_hexpand(true);
+        preview_webview.set_vexpand(true);
+        preview_webview.set_can_focus(true); // Permitir que reciba foco para keybindings
+        preview_webview.set_focusable(true);
+
+        // Configurar settings del WebView para preview
+        if let Some(settings) = WebViewExt::settings(&preview_webview) {
+            settings.set_enable_javascript(true);
+            settings.set_enable_developer_extras(false);
+            settings.set_javascript_can_access_clipboard(false);
+            settings.set_allow_universal_access_from_file_urls(false);
+            settings.set_allow_file_access_from_file_urls(true); // Para imágenes locales
+            // Deshabilitar funciones innecesarias para preview
+            settings.set_enable_media(false);
+            settings.set_enable_webaudio(false);
+            settings.set_enable_webgl(false);
+        }
+
+        // Configurar UserContentManager para recibir mensajes JS→Rust
+        if let Some(content_manager) = preview_webview.user_content_manager() {
+            // Registrar handler para mensajes desde JavaScript
+            content_manager.register_script_message_handler("notnative", None);
+        }
+
+        // Scroll para el WebView
+        let preview_scroll = gtk::ScrolledWindow::new();
+        preview_scroll.set_hexpand(true);
+        preview_scroll.set_vexpand(true);
+        preview_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        preview_scroll.set_child(Some(&preview_webview));
+        editor_stack.add_named(&preview_scroll, Some("preview"));
+
+        // Por defecto mostrar el preview (modo Normal)
+        editor_stack.set_visible_child_name("preview");
+
+        // Agregar el Stack interno al Stack principal de contenido
         widgets
             .content_stack
-            .add_named(&editor_scroll, Some("editor"));
+            .add_named(&editor_stack, Some("editor"));
         widgets.content_stack.set_visible_child_name("editor");
 
         let text_buffer = text_view_actual.buffer();
@@ -976,10 +1067,10 @@ impl SimpleComponent for MainApp {
             note_name: &str,
         ) {
             let keybindings_content = include_str!("../docs/KEYBINDINGS.md");
-            
+
             // Crear en carpeta Notnative
             let full_name = format!("Notnative/{}", note_name);
-            
+
             match notes_dir.create_note(&full_name, keybindings_content) {
                 Ok(_) => {
                     println!("✅ Nota '{}' creada", full_name);
@@ -993,7 +1084,7 @@ impl SimpleComponent for MainApp {
                     }
                 }
             }
-            
+
             // Marcar onboarding como completado y guardar config
             {
                 let mut config = notes_config.borrow_mut();
@@ -1010,28 +1101,39 @@ impl SimpleComponent for MainApp {
         let (initial_buffer, current_note) = {
             // Nombre único para la nota de atajos de NotNative
             const KEYBINDINGS_NOTE_NAME: &str = "NotNative_Atajos_de_Teclado";
-            
+
             // Obtener valores antes para evitar RefCell borrow conflicts
-            let last_note = notes_config.borrow().get_last_opened_note().map(|s| s.to_string());
+            let last_note = notes_config
+                .borrow()
+                .get_last_opened_note()
+                .map(|s| s.to_string());
             let onboarding_completed = notes_config.borrow().is_onboarding_completed();
-            
+
             // Primero intentar cargar la última nota abierta
             if let Some(last_note) = last_note {
                 match notes_dir.find_note(&last_note) {
                     Ok(Some(note)) => match note.read() {
                         Ok(content) => {
                             println!("Última nota abierta cargada: {}", last_note);
-                            
+
                             // Verificar si necesitamos crear la nota de onboarding
                             if !onboarding_completed {
-                                create_keybindings_note(&notes_dir, &notes_config, KEYBINDINGS_NOTE_NAME);
+                                create_keybindings_note(
+                                    &notes_dir,
+                                    &notes_config,
+                                    KEYBINDINGS_NOTE_NAME,
+                                );
                             }
-                            
+
                             (NoteBuffer::from_text(&content), Some(note))
                         }
                         Err(_) => {
                             // Si no se puede leer, intentar con bienvenida
-                            try_load_or_create_welcome(&notes_dir, &notes_config, onboarding_completed)
+                            try_load_or_create_welcome(
+                                &notes_dir,
+                                &notes_config,
+                                onboarding_completed,
+                            )
                         }
                     },
                     _ => {
@@ -1053,17 +1155,17 @@ impl SimpleComponent for MainApp {
         ) -> (NoteBuffer, Option<NoteFile>) {
             // Nombre único para la nota de atajos de NotNative
             const KEYBINDINGS_NOTE_NAME: &str = "NotNative_Atajos_de_Teclado";
-            
+
             match notes_dir.find_note("bienvenida") {
                 Ok(Some(note)) => match note.read() {
                     Ok(content) => {
                         println!("Nota 'bienvenida' cargada");
-                        
+
                         // Si el onboarding no está completo, crear nota de atajos
                         if !onboarding_completed {
                             create_keybindings_note(notes_dir, notes_config, KEYBINDINGS_NOTE_NAME);
                         }
-                        
+
                         (NoteBuffer::from_text(&content), Some(note))
                     }
                     Err(_) => (NoteBuffer::new(), None),
@@ -1095,26 +1197,31 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
 👉 **Lee la nota @NotNative_Atajos_de_Teclado para configurar los atajos de teclado globales.**
 "#;
                             // Crear nota de bienvenida
-                            let result = match notes_dir.create_note("bienvenida", welcome_content) {
+                            let result = match notes_dir.create_note("bienvenida", welcome_content)
+                            {
                                 Ok(note) => {
                                     println!("Nota de bienvenida creada");
                                     (NoteBuffer::from_text(welcome_content), Some(note))
                                 }
                                 Err(_) => (NoteBuffer::new(), None),
                             };
-                            
+
                             // Crear nota de keybindings (primera vez)
                             create_keybindings_note(notes_dir, notes_config, KEYBINDINGS_NOTE_NAME);
-                            
+
                             result
                         }
                         _ => {
                             // Ya hay otras notas
                             // Si el onboarding no está completo, crear nota de atajos
                             if !onboarding_completed {
-                                create_keybindings_note(notes_dir, notes_config, KEYBINDINGS_NOTE_NAME);
+                                create_keybindings_note(
+                                    notes_dir,
+                                    notes_config,
+                                    KEYBINDINGS_NOTE_NAME,
+                                );
                             }
-                            
+
                             println!(
                                 "Nota de bienvenida no existe y hay otras notas, iniciando vacío"
                             );
@@ -2395,6 +2502,11 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
             markdown_enabled: true, // Ahora con parser robusto usando offsets de pulldown-cmark
             bit8_mode: false,
             text_view: text_view_actual.clone(),
+            preview_webview: preview_webview.clone(),
+            editor_stack: editor_stack.clone(),
+            editor_scroll: editor_scroll.clone(),
+            preview_scroll: preview_scroll.clone(),
+            preview_scroll_percent: Rc::new(RefCell::new(0.0)),
             split_view: widgets.split_view.clone(),
             notes_list: widgets.notes_list.clone(),
             sidebar_visible: false,
@@ -2568,6 +2680,68 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
 
         // Guardar el sender en el modelo
         *model.app_sender.borrow_mut() = Some(sender.clone());
+
+        // Configurar handler para mensajes JS→Rust desde el WebView de preview
+        {
+            if let Some(content_manager) = preview_webview.user_content_manager() {
+                let sender_clone = sender.clone();
+                content_manager.connect_script_message_received(
+                    Some("notnative"),
+                    move |_manager, js_result| {
+                        // Parsear el mensaje JSON del JavaScript
+                        // js_result es un javascriptcore::Value, usamos to_str() para convertir a GString
+                        let message_str = js_result.to_str();
+                        if let Ok(message) = serde_json::from_str::<serde_json::Value>(&message_str)
+                        {
+                            let action = message["action"].as_str().unwrap_or("");
+                            let args = &message["args"];
+
+                            match action {
+                                "todo-toggle" => {
+                                    // args: [line_number, is_checked]
+                                    if let (Some(line), Some(checked)) = (
+                                        args.get(0).and_then(|v| v.as_i64()),
+                                        args.get(1).and_then(|v| v.as_bool()),
+                                    ) {
+                                        sender_clone.input(AppMsg::ToggleTodoLine {
+                                            line: line as usize,
+                                            checked,
+                                        });
+                                    }
+                                }
+                                "open-note" => {
+                                    // args: [note_name]
+                                    if let Some(note_name) = args.get(0).and_then(|v| v.as_str()) {
+                                        sender_clone.input(AppMsg::LoadNote {
+                                            name: note_name.to_string(),
+                                            highlight_text: None,
+                                        });
+                                    }
+                                }
+                                "search-tag" => {
+                                    // args: [tag_name]
+                                    if let Some(tag_name) = args.get(0).and_then(|v| v.as_str()) {
+                                        sender_clone
+                                            .input(AppMsg::SaveAndSearchTag(tag_name.to_string()));
+                                    }
+                                }
+                                "line-click" => {
+                                    // args: [line_number]
+                                    if let Some(line) = args.get(0).and_then(|v| v.as_i64()) {
+                                        sender_clone.input(AppMsg::SwitchToInsertAtLine {
+                                            line: line as usize,
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    println!("WebView: mensaje desconocido: {}", action);
+                                }
+                            }
+                        }
+                    },
+                );
+            }
+        }
 
         // Configurar el widget de respuesta semántica
         {
@@ -2967,6 +3141,123 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
             }
         ));
         text_view_actual.add_controller(key_controller);
+
+        // Añadir key controller al WebView de preview para que los keybindings funcionen en modo Normal
+        let webview_key_controller = gtk::EventControllerKey::new();
+        let mode_for_webview = model.mode.clone();
+        let webview_for_scroll = preview_webview.clone();
+        webview_key_controller.connect_key_pressed(gtk::glib::clone!(
+            #[strong]
+            sender,
+            #[strong]
+            mode_for_webview,
+            #[strong]
+            webview_for_scroll,
+            move |_controller, keyval, _keycode, modifiers| {
+                let key_name = keyval.name().map(|s| s.to_string()).unwrap_or_default();
+
+                // Ctrl+F siempre funciona
+                if key_name == "f" && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                    sender.input(AppMsg::CloseSidebarAndOpenSearch);
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Alt+F: Búsqueda dentro de la nota actual
+                if key_name == "f" && modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) {
+                    sender.input(AppMsg::ToggleFloatingSearchInNote);
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                let current_mode = *mode_for_webview.borrow();
+
+                // En modo Normal, manejar scroll con flechas/j/k
+                if current_mode == EditorMode::Normal {
+                    match key_name.as_str() {
+                        "Down" | "j" => {
+                            // Scroll hacia abajo
+                            webview_for_scroll.evaluate_javascript(
+                                "window.scrollBy(0, 60);",
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        "Up" | "k" => {
+                            // Scroll hacia arriba
+                            webview_for_scroll.evaluate_javascript(
+                                "window.scrollBy(0, -60);",
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        "Page_Down" => {
+                            webview_for_scroll.evaluate_javascript(
+                                "window.scrollBy(0, window.innerHeight * 0.8);",
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        "Page_Up" => {
+                            webview_for_scroll.evaluate_javascript(
+                                "window.scrollBy(0, -window.innerHeight * 0.8);",
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        "Home" | "g" if !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) => {
+                            webview_for_scroll.evaluate_javascript(
+                                "window.scrollTo(0, 0);",
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        "End" | "G" => {
+                            webview_for_scroll.evaluate_javascript(
+                                "window.scrollTo(0, document.body.scrollHeight);",
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
+                            return gtk::glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let key_mods = KeyModifiers {
+                    ctrl: modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK),
+                    alt: modifiers.contains(gtk::gdk::ModifierType::ALT_MASK),
+                    shift: modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK),
+                };
+
+                // En modo Normal, procesar otros keybindings
+                if current_mode == EditorMode::Normal {
+                    sender.input(AppMsg::KeyPress {
+                        key: key_name,
+                        modifiers: key_mods,
+                    });
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                gtk::glib::Propagation::Proceed
+            }
+        ));
+        preview_webview.add_controller(webview_key_controller);
 
         // Conectar señales de inserción y eliminación del TextBuffer para mantener nuestro NoteBuffer sincronizado
         let is_syncing_to_gtk_insert = model.is_syncing_to_gtk.clone();
@@ -3584,13 +3875,10 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
         ));
         widgets.notes_list.add_controller(root_drop_target);
 
-        // Agregar manejador de Escape para el notes_list
-        let text_view_for_list_escape = model.text_view.clone();
+        // Agregar manejador de teclas para el notes_list
         let notes_list_for_keys = model.notes_list.clone();
         let list_key_controller = gtk::EventControllerKey::new();
         list_key_controller.connect_key_pressed(gtk::glib::clone!(
-            #[strong]
-            text_view_for_list_escape,
             #[strong]
             notes_list_for_keys,
             #[strong]
@@ -3600,14 +3888,8 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
 
                 match key_name.as_str() {
                     "Escape" => {
-                        // Poner foco en el text_view con un pequeño delay
-                        let text_view_clone = text_view_for_list_escape.clone();
-                        gtk::glib::timeout_add_local_once(
-                            std::time::Duration::from_millis(10),
-                            move || {
-                                text_view_clone.grab_focus();
-                            },
-                        );
+                        // Cerrar sidebar y devolver foco al editor (ToggleSidebar maneja el foco)
+                        sender.input(AppMsg::ToggleSidebar);
                         gtk::glib::Propagation::Stop
                     }
                     "Return" => {
@@ -3657,10 +3939,8 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                                             };
 
                                             if let Some(name) = note_name {
-                                                sender_clone.input(AppMsg::LoadNote {
-                                                    name,
-                                                    highlight_text: None,
-                                                });
+                                                sender_clone
+                                                    .input(AppMsg::LoadNoteFromSidebar { name });
                                             } else {
                                                 // Fallback: obtener del label
                                                 if let Some(child) = target_row.child() {
@@ -3677,9 +3957,8 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                                                                 let note_name =
                                                                     label.text().to_string();
                                                                 sender_clone.input(
-                                                                    AppMsg::LoadNote {
+                                                                    AppMsg::LoadNoteFromSidebar {
                                                                         name: note_name,
-                                                                        highlight_text: None,
                                                                     },
                                                                 );
                                                             }
@@ -3819,10 +4098,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                                     };
 
                                     if let Some(name) = note_name {
-                                        sender.input(AppMsg::LoadNote {
-                                            name,
-                                            highlight_text: None,
-                                        });
+                                        sender.input(AppMsg::LoadNoteFromSidebar { name });
                                     } else {
                                         // Si no está en set_data, obtener desde el label (lista normal)
                                         if let Some(child) = next_row.child() {
@@ -3835,9 +4111,8 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                                                         label_widget.downcast::<gtk::Label>()
                                                     {
                                                         let note_name = label.text().to_string();
-                                                        sender.input(AppMsg::LoadNote {
+                                                        sender.input(AppMsg::LoadNoteFromSidebar {
                                                             name: note_name,
-                                                            highlight_text: None,
                                                         });
                                                     }
                                                 }
@@ -3876,10 +4151,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                                         };
 
                                         if let Some(name) = note_name {
-                                            sender.input(AppMsg::LoadNote {
-                                                name,
-                                                highlight_text: None,
-                                            });
+                                            sender.input(AppMsg::LoadNoteFromSidebar { name });
                                         } else {
                                             // Si no está en set_data, obtener desde el label (lista normal)
                                             if let Some(child) = prev_row.child() {
@@ -3894,10 +4166,11 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                                                         {
                                                             let note_name =
                                                                 label.text().to_string();
-                                                            sender.input(AppMsg::LoadNote {
-                                                                name: note_name,
-                                                                highlight_text: None,
-                                                            });
+                                                            sender.input(
+                                                                AppMsg::LoadNoteFromSidebar {
+                                                                    name: note_name,
+                                                                },
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -3962,108 +4235,112 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
         let floating_rows_for_nav = model.floating_search_rows.clone();
         let floating_in_current_note = model.floating_search_in_current_note.clone();
 
-        floating_key_controller.connect_key_pressed(move |_controller, keyval, _keycode, modifiers| {
-            let shift_pressed = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            let in_current_note = *floating_in_current_note.borrow();
-            
-            match keyval {
-                // Cambiar modo de búsqueda con Control
-                gtk::gdk::Key::Control_L | gtk::gdk::Key::Control_R => {
-                    sender_for_floating_key.input(AppMsg::ToggleSemanticSearchWithNotification);
-                    return gtk::glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Escape => {
-                    sender_for_floating_key.input(AppMsg::ToggleFloatingSearch);
-                    return gtk::glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Down => {
-                    // Mover foco a la lista de resultados (al seleccionado o al primero)
-                    if let Some(selected_row) = floating_results_for_nav.selected_row() {
-                        selected_row.grab_focus();
-                    } else if let Some(first_row) = floating_rows_for_nav.borrow().first().cloned() {
-                        floating_results_for_nav.select_row(Some(&first_row));
-                        first_row.grab_focus();
+        floating_key_controller.connect_key_pressed(
+            move |_controller, keyval, _keycode, modifiers| {
+                let shift_pressed = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                let in_current_note = *floating_in_current_note.borrow();
+
+                match keyval {
+                    // Cambiar modo de búsqueda con Control
+                    gtk::gdk::Key::Control_L | gtk::gdk::Key::Control_R => {
+                        sender_for_floating_key.input(AppMsg::ToggleSemanticSearchWithNotification);
+                        return gtk::glib::Propagation::Stop;
                     }
-                    return gtk::glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Up => {
-                    // Navegar al resultado anterior
-                    if let Some(selected_row) = floating_results_for_nav.selected_row() {
-                        let index = selected_row.index();
-                        if index > 0 {
-                            let prev_index = index - 1;
-                            let prev_row = {
-                                let rows = floating_rows_for_nav.borrow();
-                                rows.get(prev_index as usize).cloned()
+                    gtk::gdk::Key::Escape => {
+                        sender_for_floating_key.input(AppMsg::ToggleFloatingSearch);
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Down => {
+                        // Mover foco a la lista de resultados (al seleccionado o al primero)
+                        if let Some(selected_row) = floating_results_for_nav.selected_row() {
+                            selected_row.grab_focus();
+                        } else if let Some(first_row) =
+                            floating_rows_for_nav.borrow().first().cloned()
+                        {
+                            floating_results_for_nav.select_row(Some(&first_row));
+                            first_row.grab_focus();
+                        }
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Up => {
+                        // Navegar al resultado anterior
+                        if let Some(selected_row) = floating_results_for_nav.selected_row() {
+                            let index = selected_row.index();
+                            if index > 0 {
+                                let prev_index = index - 1;
+                                let prev_row = {
+                                    let rows = floating_rows_for_nav.borrow();
+                                    rows.get(prev_index as usize).cloned()
+                                };
+                                if let Some(prev_row) = prev_row {
+                                    floating_results_for_nav.select_row(Some(&prev_row));
+                                    // IMPORTANTE: Dar foco a la fila para que GTK maneje el scroll correctamente
+                                    prev_row.grab_focus();
+
+                                    let scroll = floating_scroll_for_nav.clone();
+                                    let prev_index_usize = prev_index as usize;
+                                    gtk::glib::timeout_add_local_once(
+                                        std::time::Duration::from_millis(10),
+                                        move || {
+                                            let adjustment = scroll.vadjustment();
+                                            let current_value = adjustment.value();
+
+                                            let estimated_row_height = 48.0;
+                                            let target_start =
+                                                prev_index_usize as f64 * estimated_row_height;
+
+                                            if target_start < current_value {
+                                                adjustment.set_value(target_start.max(0.0));
+                                            }
+                                        },
+                                    );
+                                }
+                            }
+                        } else if let Some(first_row) =
+                            floating_rows_for_nav.borrow().first().cloned()
+                        {
+                            // Si no hay selección, seleccionar y dar foco al primer resultado
+                            floating_results_for_nav.select_row(Some(&first_row));
+                            first_row.grab_focus();
+                        }
+                        return gtk::glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
+                        // Shift+Enter: ir a coincidencia anterior (solo en modo búsqueda en nota)
+                        if shift_pressed {
+                            sender_for_floating_key.input(AppMsg::InNoteSearchPrev);
+                            return gtk::glib::Propagation::Stop;
+                        }
+
+                        // Enter normal en modo búsqueda en nota: ir a siguiente coincidencia
+                        if in_current_note {
+                            sender_for_floating_key.input(AppMsg::InNoteSearchNext);
+                            return gtk::glib::Propagation::Stop;
+                        }
+
+                        // Enter normal en modo global: cargar la nota seleccionada
+                        let row_to_load = floating_results_for_nav
+                            .selected_row()
+                            .or_else(|| floating_rows_for_nav.borrow().first().cloned());
+
+                        if let Some(row) = row_to_load {
+                            let note_name = unsafe {
+                                row.data::<String>("note_name")
+                                    .map(|data| data.as_ref().clone())
                             };
-                            if let Some(prev_row) = prev_row {
-                                floating_results_for_nav.select_row(Some(&prev_row));
-                                // IMPORTANTE: Dar foco a la fila para que GTK maneje el scroll correctamente
-                                prev_row.grab_focus();
 
-                                let scroll = floating_scroll_for_nav.clone();
-                                let prev_index_usize = prev_index as usize;
-                                gtk::glib::timeout_add_local_once(
-                                    std::time::Duration::from_millis(10),
-                                    move || {
-                                        let adjustment = scroll.vadjustment();
-                                        let current_value = adjustment.value();
-
-                                        let estimated_row_height = 48.0;
-                                        let target_start = prev_index_usize as f64 * estimated_row_height;
-
-                                        if target_start < current_value {
-                                            adjustment.set_value(target_start.max(0.0));
-                                        }
-                                    }
-                                );
+                            if let Some(name) = note_name {
+                                sender_for_floating_key
+                                    .input(AppMsg::LoadNoteFromFloatingSearch(name));
                             }
                         }
-                    } else if let Some(first_row) = floating_rows_for_nav.borrow().first().cloned() {
-                        // Si no hay selección, seleccionar y dar foco al primer resultado
-                        floating_results_for_nav.select_row(Some(&first_row));
-                        first_row.grab_focus();
-                    }
-                    return gtk::glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter => {
-                    // Shift+Enter: ir a coincidencia anterior (solo en modo búsqueda en nota)
-                    if shift_pressed {
-                        sender_for_floating_key.input(AppMsg::InNoteSearchPrev);
                         return gtk::glib::Propagation::Stop;
                     }
-                    
-                    // Enter normal en modo búsqueda en nota: ir a siguiente coincidencia
-                    if in_current_note {
-                        sender_for_floating_key.input(AppMsg::InNoteSearchNext);
-                        return gtk::glib::Propagation::Stop;
-                    }
-                    
-                    // Enter normal en modo global: cargar la nota seleccionada
-                    let row_to_load = floating_results_for_nav.selected_row()
-                        .or_else(|| {
-                            floating_rows_for_nav
-                                .borrow()
-                                .first()
-                                .cloned()
-                        });
-
-                    if let Some(row) = row_to_load {
-                        let note_name = unsafe {
-                            row.data::<String>("note_name")
-                                .map(|data| data.as_ref().clone())
-                        };
-
-                        if let Some(name) = note_name {
-                            sender_for_floating_key.input(AppMsg::LoadNoteFromFloatingSearch(name));
-                        }
-                    }
-                    return gtk::glib::Propagation::Stop;
+                    _ => {}
                 }
-                _ => {}
-            }
-            gtk::glib::Propagation::Proceed
-        });
+                gtk::glib::Propagation::Proceed
+            },
+        );
         model
             .floating_search_entry
             .add_controller(floating_key_controller);
@@ -4280,16 +4557,34 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
         // Actualizar tooltips según el idioma actual al inicio
         {
             let i18n = model.i18n.borrow();
-            model.sidebar_toggle_button.set_tooltip_text(Some(&i18n.t("show_hide_notes")));
-            model.search_toggle_button.set_tooltip_text(Some(&i18n.t("search_notes")));
-            model.new_note_button.set_tooltip_text(Some(&i18n.t("new_note")));
-            model.settings_button.set_tooltip_text(Some(&i18n.t("settings")));
-            model.tags_menu_button.set_tooltip_text(Some(&i18n.t("tags_note")));
-            model.todos_menu_button.set_tooltip_text(Some(&i18n.t("todos_note")));
-            model.music_player_button.set_tooltip_text(Some(&i18n.t("music_player")));
-            model.reminders_button.set_tooltip_text(Some(&i18n.t("reminder_tooltip")));
+            model
+                .sidebar_toggle_button
+                .set_tooltip_text(Some(&i18n.t("show_hide_notes")));
+            model
+                .search_toggle_button
+                .set_tooltip_text(Some(&i18n.t("search_notes")));
+            model
+                .new_note_button
+                .set_tooltip_text(Some(&i18n.t("new_note")));
+            model
+                .settings_button
+                .set_tooltip_text(Some(&i18n.t("settings")));
+            model
+                .tags_menu_button
+                .set_tooltip_text(Some(&i18n.t("tags_note")));
+            model
+                .todos_menu_button
+                .set_tooltip_text(Some(&i18n.t("todos_note")));
+            model
+                .music_player_button
+                .set_tooltip_text(Some(&i18n.t("music_player")));
+            model
+                .reminders_button
+                .set_tooltip_text(Some(&i18n.t("reminder_tooltip")));
             model.sidebar_notes_label.set_label(&i18n.t("notes"));
-            model.floating_search_entry.set_placeholder_text(Some(&i18n.t("search_placeholder")));
+            model
+                .floating_search_entry
+                .set_placeholder_text(Some(&i18n.t("search_placeholder")));
         }
 
         ComponentParts { model, widgets }
@@ -4349,13 +4644,21 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     let target_position = if self.sidebar_visible { 250 } else { 0 };
                     self.animate_sidebar(target_position);
 
-                    // Si estamos cerrando el sidebar, devolver foco al editor
+                    // Si estamos cerrando el sidebar, devolver foco al widget correcto según el modo
                     if !self.sidebar_visible {
+                        let current_mode = *self.mode.borrow();
+                        let markdown_enabled = self.markdown_enabled;
                         let text_view = self.text_view.clone();
+                        let preview_webview = self.preview_webview.clone();
+
                         gtk::glib::timeout_add_local_once(
                             std::time::Duration::from_millis(160),
                             move || {
-                                text_view.grab_focus();
+                                if current_mode == EditorMode::Normal && markdown_enabled {
+                                    preview_webview.grab_focus();
+                                } else {
+                                    text_view.grab_focus();
+                                }
                             },
                         );
                     }
@@ -4545,8 +4848,12 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     // Ocultar el answer_row pero mantenerlo en el árbol
                     self.semantic_search_answer_row.set_visible(false);
 
-                    // Devolver foco al editor
-                    self.text_view.grab_focus();
+                    // Devolver foco al editor correcto según el modo
+                    if current_mode == EditorMode::Normal && self.markdown_enabled {
+                        self.preview_webview.grab_focus();
+                    } else {
+                        self.text_view.grab_focus();
+                    }
                     return;
                 }
 
@@ -4746,11 +5053,58 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                         self.highlight_and_scroll_to_text(&text_to_highlight);
                     }
 
-                    // IMPORTANTE: Solo devolver el foco al TextView si el sidebar no está abierto
+                    // IMPORTANTE: Solo devolver el foco al editor si el sidebar no está abierto
                     // o si el sidebar no tiene el foco actualmente (para permitir navegación con teclado)
                     if !self.sidebar_visible || !self.notes_list.has_focus() {
-                        self.text_view.grab_focus();
+                        let current_mode = *self.mode.borrow();
+                        if current_mode == EditorMode::Normal && self.markdown_enabled {
+                            self.preview_webview.grab_focus();
+                        } else {
+                            self.text_view.grab_focus();
+                        }
                     }
+                }
+            }
+            AppMsg::LoadNoteFromSidebar { name } => {
+                // Cargar nota desde el sidebar SIN cambiar el foco
+                // (permite navegación continua con flechas)
+                if self.current_note.is_some() || self.has_unsaved_changes {
+                    self.save_current_note(true);
+                }
+
+                let clean_name = name
+                    .trim()
+                    .trim_start_matches("System:")
+                    .trim()
+                    .trim_start_matches("===")
+                    .trim_end_matches("===")
+                    .trim()
+                    .to_string();
+
+                if let Err(e) = self.load_note(&clean_name) {
+                    eprintln!("Error cargando nota '{}': {}", clean_name, e);
+                } else {
+                    *self.cached_source_text.borrow_mut() = None;
+                    *self.cached_rendered_text.borrow_mut() = None;
+                    self.content_stack.set_visible_child_name("editor");
+
+                    if *self.mode.borrow() == EditorMode::ChatAI {
+                        *self.mode.borrow_mut() = EditorMode::Normal;
+                    }
+
+                    // Usar sync_to_view_no_focus para NO robar el foco del sidebar
+                    self.sync_to_view_no_focus();
+                    self.update_status_bar(&sender);
+                    self.refresh_tags_display_with_sender(&sender);
+                    self.refresh_todos_summary();
+                    self.window_title.set_label(&clean_name);
+                    self.has_unsaved_changes = false;
+
+                    // Forzar que el foco vuelva al sidebar
+                    let notes_list = self.notes_list.clone();
+                    gtk::glib::idle_add_local_once(move || {
+                        notes_list.grab_focus();
+                    });
                 }
             }
             AppMsg::CreateNewNote(name) => {
@@ -5294,7 +5648,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
 
             AppMsg::ToggleQuickNote => {
                 println!("📝 Toggle Quick Note...");
-                
+
                 // Crear ventana si no existe
                 if self.quick_note_window.borrow().is_none() {
                     let qn_window = crate::quick_note::QuickNoteWindow::new(
@@ -5304,7 +5658,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     );
                     *self.quick_note_window.borrow_mut() = Some(qn_window);
                 }
-                
+
                 // Toggle visibilidad
                 if let Some(ref qn) = *self.quick_note_window.borrow() {
                     qn.toggle();
@@ -5313,7 +5667,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
 
             AppMsg::NewQuickNote => {
                 println!("📝 Nueva Quick Note...");
-                
+
                 // Crear ventana si no existe
                 if self.quick_note_window.borrow().is_none() {
                     let qn_window = crate::quick_note::QuickNoteWindow::new(
@@ -5323,7 +5677,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     );
                     *self.quick_note_window.borrow_mut() = Some(qn_window);
                 }
-                
+
                 // Crear y abrir nueva nota
                 if let Some(ref qn) = *self.quick_note_window.borrow() {
                     qn.new_note();
@@ -5972,8 +6326,13 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     // Ocultar el answer_row pero mantenerlo en el árbol
                     self.semantic_search_answer_row.set_visible(false);
 
-                    // Devolver foco al editor
-                    self.text_view.grab_focus();
+                    // Devolver foco al editor correcto según el modo
+                    let current_mode = *self.mode.borrow();
+                    if current_mode == EditorMode::Normal && self.markdown_enabled {
+                        self.preview_webview.grab_focus();
+                    } else {
+                        self.text_view.grab_focus();
+                    }
                 }
             }
 
@@ -5993,9 +6352,11 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                 if self.floating_search_visible {
                     // Cambiar a modo Insert para buscar en el texto markdown puro
                     if *self.mode.borrow() == EditorMode::Normal {
-                        sender.input(AppMsg::ProcessAction(EditorAction::ChangeMode(EditorMode::Insert)));
+                        sender.input(AppMsg::ProcessAction(EditorAction::ChangeMode(
+                            EditorMode::Insert,
+                        )));
                     }
-                    
+
                     self.floating_search_rows.borrow_mut().clear();
                     // Ocultar la lista de resultados en este modo
                     self.floating_search_results.set_visible(false);
@@ -6040,7 +6401,14 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     // Al cerrar, restaurar visibilidad de resultados para modo global
                     self.floating_search_bar.set_visible(false);
                     self.floating_search_results.set_visible(true);
-                    self.text_view.grab_focus();
+
+                    // Devolver foco al editor correcto según el modo
+                    let current_mode = *self.mode.borrow();
+                    if current_mode == EditorMode::Normal && self.markdown_enabled {
+                        self.preview_webview.grab_focus();
+                    } else {
+                        self.text_view.grab_focus();
+                    }
                 }
             }
 
@@ -6330,6 +6698,50 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                 self.refresh_todos_summary();
 
                 // Actualizar barra de estado
+                self.update_status_bar(&sender);
+            }
+            // WebView preview handlers
+            AppMsg::ToggleTodoLine { line, checked } => {
+                // Toggle TODO checkbox desde el WebView de preview
+                // Buscar la línea en el buffer y cambiar su estado
+                self.toggle_todo_at_line(line, checked);
+
+                // Guardar automáticamente
+                self.save_current_note(true);
+
+                // Re-renderizar el preview
+                self.render_preview_html();
+
+                // Actualizar resumen de TODOs
+                self.refresh_todos_summary();
+            }
+            AppMsg::SwitchToInsertAtLine { line } => {
+                // Cambiar a modo Insert y posicionar cursor en la línea especificada
+                *self.mode.borrow_mut() = EditorMode::Insert;
+
+                // Calcular la posición del cursor para esa línea
+                let buffer_text = self.buffer.to_string();
+                let mut char_offset = 0;
+                for (i, line_text) in buffer_text.lines().enumerate() {
+                    if i + 1 >= line {
+                        break;
+                    }
+                    char_offset += line_text.chars().count() + 1; // +1 for newline
+                }
+
+                self.cursor_position = char_offset;
+
+                // Actualizar vista a modo Insert (TextView)
+                self.editor_stack.set_visible_child_name("editor");
+                self.sync_to_view();
+
+                // Dar foco al TextView
+                let text_view = self.text_view.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    text_view.grab_focus();
+                });
+
+                // Actualizar indicador de modo
                 self.update_status_bar(&sender);
             }
             AppMsg::AskTranscribeYouTube { url, video_id } => {
@@ -9822,7 +10234,67 @@ impl MainApp {
         }
     }
 
+    /// Toggle TODO checkbox en una línea específica (desde WebView)
+    /// El `checkbox_num` es el número secuencial del checkbox (1-indexado), no el número de línea
+    fn toggle_todo_at_line(&mut self, checkbox_num: usize, checked: bool) {
+        let text = self.buffer.to_string();
+        let lines: Vec<&str> = text.lines().collect();
+
+        if checkbox_num == 0 {
+            return;
+        }
+
+        // Buscar el N-ésimo checkbox en el documento
+        let mut checkbox_count = 0;
+        let mut char_offset = 0;
+
+        for line in lines.iter() {
+            // Buscar patrones de TODO en esta línea
+            let todo_patterns = ["- [ ]", "- [x]", "- [X]"];
+            for pattern in &todo_patterns {
+                if let Some(todo_pos) = line.find(pattern) {
+                    checkbox_count += 1;
+                    if checkbox_count == checkbox_num {
+                        let buffer_pos = char_offset + todo_pos;
+                        self.update_todo_in_buffer(buffer_pos, checked);
+                        return;
+                    }
+                    break; // Solo un checkbox por línea
+                }
+            }
+            char_offset += line.chars().count() + 1; // +1 for newline
+        }
+    }
+
+    /// Renderiza el contenido actual como HTML y lo carga en el WebView de preview
+    fn render_preview_html(&self) {
+        let buffer_text = self.buffer.to_string();
+
+        // Determinar el tema basado en la preferencia
+        let preview_theme = match self.theme {
+            ThemePreference::Light => PreviewTheme::Light,
+            ThemePreference::Dark | ThemePreference::FollowSystem => PreviewTheme::Dark,
+        };
+
+        // Generar HTML con base_path para resolver imágenes locales
+        let notes_base_path = self.notes_dir.root().to_path_buf();
+        let renderer = HtmlRenderer::with_base_path(preview_theme, notes_base_path);
+        let html = renderer.render(&buffer_text);
+
+        // Cargar en el WebView
+        use webkit6::prelude::WebViewExt;
+        self.preview_webview.load_html(&html, None);
+    }
+
     fn sync_to_view(&self) {
+        self.sync_to_view_internal(true);
+    }
+
+    fn sync_to_view_no_focus(&self) {
+        self.sync_to_view_internal(false);
+    }
+
+    fn sync_to_view_internal(&self, grab_focus: bool) {
         // Activar flag para evitar que los handlers GTK nos sincronicen de vuelta
         *self.is_syncing_to_gtk.borrow_mut() = true;
         println!("sync_to_view activado. Flag is_syncing_to_gtk = true");
@@ -9830,65 +10302,61 @@ impl MainApp {
         let buffer_text = self.buffer.to_string();
         let current_mode = *self.mode.borrow();
 
-        // Verificar si el texto fuente cambió (antes de cachear)
-        let text_changed = if current_mode == EditorMode::Normal && self.markdown_enabled {
-            // En Normal mode, comparar con el cache del texto fuente
+        // En modo Normal con markdown habilitado, usar WebView para preview HTML
+        if current_mode == EditorMode::Normal && self.markdown_enabled {
+            // Verificar si el texto fuente cambió
             let cached_source = self.cached_source_text.borrow();
-            cached_source.as_ref() != Some(&buffer_text)
-        } else {
-            // En Insert mode, siempre actualizar
-            true
-        };
+            let text_changed = cached_source.as_ref() != Some(&buffer_text);
+            drop(cached_source);
 
-        // En modo Normal, usar cache si el texto fuente no cambió
-        let display_text = if current_mode == EditorMode::Normal && self.markdown_enabled {
-            if !text_changed {
-                // Reusar el renderizado cacheado
-                self.cached_rendered_text.borrow().clone().unwrap()
-            } else {
-                // Texto fuente cambió, renderizar y cachear
-                let rendered = self.render_clean_markdown(&buffer_text);
+            if text_changed {
+                // Actualizar cache
                 *self.cached_source_text.borrow_mut() = Some(buffer_text.clone());
-                *self.cached_rendered_text.borrow_mut() = Some(rendered.clone());
-                rendered
+
+                // Renderizar HTML y cargar en WebView
+                self.render_preview_html();
+
+                println!(
+                    "📍 sync_to_view: Modo Normal (WebView), buffer.len={}",
+                    self.buffer.len_chars()
+                );
+            }
+
+            // Asegurar que el WebView (preview) está visible
+            self.editor_stack.set_visible_child_name("preview");
+
+            // Solo dar foco si se solicita
+            if grab_focus {
+                let webview = self.preview_webview.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    webview.grab_focus();
+                });
             }
         } else {
-            // En Insert mode, limpiar el cache
+            // En modo Insert o sin markdown, usar TextView tradicional
+            // Limpiar el cache
             *self.cached_source_text.borrow_mut() = None;
             *self.cached_rendered_text.borrow_mut() = None;
-            buffer_text.clone()
-        };
 
-        if text_changed {
-            // Calcular posición del cursor en el texto mostrado
-            let cursor_offset = if current_mode == EditorMode::Normal && self.markdown_enabled {
-                // Mapear posición del buffer original al texto limpio
-                self.map_buffer_pos_to_display(&buffer_text, self.cursor_position)
-            } else {
-                self.cursor_position.min(self.buffer.len_chars())
-            };
+            // Asegurar que el TextView (editor) está visible
+            self.editor_stack.set_visible_child_name("editor");
+
+            // Solo dar foco si se solicita
+            if grab_focus {
+                let text_view = self.text_view.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    text_view.grab_focus();
+                });
+            }
+
+            let cursor_offset = self.cursor_position.min(self.buffer.len_chars());
 
             println!(
-                "📍 sync_to_view: Modo {:?}, cursor_offset={}, buffer.len={}",
+                "📍 sync_to_view: Modo {:?} (TextView), cursor_offset={}, buffer.len={}",
                 current_mode,
                 cursor_offset,
                 self.buffer.len_chars()
             );
-            println!(
-                "   Texto renderizado len: {}, texto fuente cambió: {}",
-                display_text.chars().count(),
-                text_changed
-            );
-
-            // Mostrar contexto alrededor del cursor
-            let chars_vec: Vec<char> = display_text.chars().collect();
-            let start = cursor_offset.saturating_sub(10);
-            let end = (cursor_offset + 10).min(chars_vec.len());
-
-            // Asegurar que cursor_offset está dentro del rango válido
-            let safe_cursor_offset = cursor_offset.min(chars_vec.len());
-            let context: String = chars_vec[start..end].iter().collect();
-            println!("   Contexto: {:?} [cursor aquí]", context);
 
             // Bloquear señales GTK durante la actualización
             self.text_buffer.begin_user_action();
@@ -9899,27 +10367,18 @@ impl MainApp {
             self.text_buffer
                 .delete(&mut start_iter.clone(), &mut end_iter.clone());
             self.text_buffer
-                .insert(&mut self.text_buffer.start_iter(), &display_text);
+                .insert(&mut self.text_buffer.start_iter(), &buffer_text);
 
-            // Restaurar cursor ANTES de terminar la acción de usuario
-            // Usar safe_cursor_offset para evitar panic
+            // Restaurar cursor
+            let safe_cursor_offset = cursor_offset.min(buffer_text.chars().count());
             let mut iter = self.text_buffer.start_iter();
             iter.set_offset(safe_cursor_offset as i32);
             self.text_buffer.place_cursor(&iter);
 
             self.text_buffer.end_user_action();
 
-            // Aplicar estilos markdown DESPUÉS de terminar la acción de usuario
-            // Solo en modo Normal (en Insert mode no aplicamos estilos)
-            if current_mode == EditorMode::Normal && self.markdown_enabled {
-                self.apply_markdown_styles_to_clean_text(&display_text);
-            }
-
             // Hacer scroll para mantener el cursor visible
-            // GTK necesita tiempo para recalcular las alturas de línea después del buffer replacement
             let text_view = self.text_view.clone();
-
-            // Programar múltiples intentos de scroll para asegurar que funcione
             for delay_ms in [10, 50, 150] {
                 let text_view_clone = text_view.clone();
                 gtk::glib::timeout_add_local_once(
@@ -9927,42 +10386,12 @@ impl MainApp {
                     move || {
                         let buffer = text_view_clone.buffer();
                         let insert_mark = buffer.get_insert();
-                        // Scroll simple sin alineación forzada, solo asegurar visibilidad
                         text_view_clone.scroll_mark_onscreen(&insert_mark);
                     },
                 );
             }
-        } else {
-            // Aunque el texto no cambió, simplemente actualizar la posición del cursor
-            println!("📌 sync_to_view: Solo actualizando cursor (texto sin cambios)");
-            let cursor_offset = if current_mode == EditorMode::Normal && self.markdown_enabled {
-                // Mapear posición del buffer original al texto limpio
-                self.map_buffer_pos_to_display(&buffer_text, self.cursor_position)
-            } else {
-                self.cursor_position.min(self.buffer.len_chars())
-            };
-            println!("   Cursor offset calculado: {}", cursor_offset);
-            let mut iter = self.text_buffer.start_iter();
-            iter.set_offset(cursor_offset as i32);
-            self.text_buffer.place_cursor(&iter);
 
-            // Hacer scroll para mantener el cursor visible
-            let text_view = self.text_view.clone();
-            gtk::glib::idle_add_local_once(move || {
-                let buffer = text_view.buffer();
-                let insert_mark = buffer.get_insert();
-                // scroll_mark_onscreen hace scroll mínimo para mantener visible
-                text_view.scroll_mark_onscreen(&insert_mark);
-            });
-        }
-
-        // Asegurar que el cursor esté visible/invisible según el modo
-        let current_mode = *self.mode.borrow();
-        if current_mode == EditorMode::Normal {
-            // En modo Normal, mostrar el cursor para permitir navegación
-            self.text_view.set_cursor_visible(true);
-        } else {
-            // En otros modos (Insert, etc.), mostrar el cursor
+            // Mostrar cursor en TextView
             self.text_view.set_cursor_visible(true);
         }
 
@@ -9992,12 +10421,12 @@ impl MainApp {
         }
 
         let buffer = &self.text_buffer;
-        
+
         // En modo Normal, el buffer contiene texto renderizado (sin markdown).
         // Usamos el texto del buffer para buscar y resaltar.
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
         let text_str = text.as_str();
-        
+
         // Normalizar texto sin acentos para búsqueda
         let text_normalized = Self::remove_accents(&text_str.to_lowercase());
         let search_normalized = Self::remove_accents(&search_text.to_lowercase());
@@ -10005,7 +10434,7 @@ impl MainApp {
         // Encontrar TODAS las coincidencias (sin distinguir acentos)
         let mut matches: Vec<(i32, i32)> = Vec::new();
         let mut start_pos = 0;
-        
+
         while let Some(pos) = text_normalized[start_pos..].find(&search_normalized) {
             let absolute_pos = start_pos + pos;
             // Convertir posición de bytes a offset de caracteres en texto normalizado
@@ -10028,14 +10457,19 @@ impl MainApp {
         // Actualizar el indicador de modo con el conteo de coincidencias
         if !matches.is_empty() {
             let current_idx = *self.in_note_search_current_index.borrow();
-            let display_idx = if current_idx < matches.len() { current_idx + 1 } else { 1 };
+            let display_idx = if current_idx < matches.len() {
+                current_idx + 1
+            } else {
+                1
+            };
             self.floating_search_mode_label.set_markup(&format!(
                 "<small>{}/{} (Enter: sig, Shift+Enter: ant)</small>",
                 display_idx,
                 matches.len()
             ));
         } else {
-            self.floating_search_mode_label.set_markup("<small>Sin coincidencias</small>");
+            self.floating_search_mode_label
+                .set_markup("<small>Sin coincidencias</small>");
         }
 
         // Guardar las coincidencias
@@ -10050,13 +10484,17 @@ impl MainApp {
         if matches.is_empty() {
             // Limpiar resaltados si no hay coincidencias
             buffer.remove_tag_by_name("search-highlight", &buffer.start_iter(), &buffer.end_iter());
-            buffer.remove_tag_by_name("search-highlight-current", &buffer.start_iter(), &buffer.end_iter());
+            buffer.remove_tag_by_name(
+                "search-highlight-current",
+                &buffer.start_iter(),
+                &buffer.end_iter(),
+            );
             return;
         }
 
         // Crear o obtener tags de resaltado
         let tag_table = buffer.tag_table();
-        
+
         // Tag para todas las coincidencias (resaltado suave)
         let tag_all = if let Some(existing_tag) = tag_table.lookup("search-highlight") {
             existing_tag
@@ -10080,7 +10518,11 @@ impl MainApp {
 
         // Limpiar resaltados previos
         buffer.remove_tag_by_name("search-highlight", &buffer.start_iter(), &buffer.end_iter());
-        buffer.remove_tag_by_name("search-highlight-current", &buffer.start_iter(), &buffer.end_iter());
+        buffer.remove_tag_by_name(
+            "search-highlight-current",
+            &buffer.start_iter(),
+            &buffer.end_iter(),
+        );
 
         // Aplicar resaltado a todas las coincidencias
         for (start, end) in &matches {
@@ -10115,7 +10557,11 @@ impl MainApp {
         ));
 
         // Quitar resaltado actual anterior
-        buffer.remove_tag_by_name("search-highlight-current", &buffer.start_iter(), &buffer.end_iter());
+        buffer.remove_tag_by_name(
+            "search-highlight-current",
+            &buffer.start_iter(),
+            &buffer.end_iter(),
+        );
 
         // Obtener tag de resaltado actual
         let tag_table = buffer.tag_table();
@@ -10128,16 +10574,13 @@ impl MainApp {
 
             // Mover cursor y hacer scroll
             buffer.place_cursor(&start_iter);
-            
+
             let text_view = self.text_view.clone();
-            gtk::glib::timeout_add_local_once(
-                std::time::Duration::from_millis(50),
-                move || {
-                    let buffer = text_view.buffer();
-                    let insert_mark = buffer.get_insert();
-                    text_view.scroll_to_mark(&insert_mark, 0.1, true, 0.0, 0.4);
-                },
-            );
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                let buffer = text_view.buffer();
+                let insert_mark = buffer.get_insert();
+                text_view.scroll_to_mark(&insert_mark, 0.1, true, 0.0, 0.4);
+            });
         }
     }
 
@@ -16990,7 +17433,9 @@ impl MainApp {
             .width_chars(12)
             .build();
 
-        let unlimited_check = gtk::CheckButton::builder().label(&i18n.t("unlimited")).build();
+        let unlimited_check = gtk::CheckButton::builder()
+            .label(&i18n.t("unlimited"))
+            .build();
 
         tokens_header.append(&tokens_label);
         tokens_header.append(&unlimited_check);
@@ -17357,7 +17802,10 @@ impl MainApp {
 
         let link_text = i18n.t("get_api_key_openrouter");
         let link_label = gtk::Label::builder()
-            .label(&format!("<a href='https://openrouter.ai'>{}</a>", link_text))
+            .label(&format!(
+                "<a href='https://openrouter.ai'>{}</a>",
+                link_text
+            ))
             .use_markup(true)
             .halign(gtk::Align::Start)
             .build();
@@ -17752,7 +18200,7 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .program_name("NotNative")
-            .version("0.1.11")
+            .version("0.1.2")
             .comments(&i18n.t("app_description"))
             .website("https://github.com/k4ditano/notnative-app")
             .website_label(&i18n.t("website"))

@@ -451,7 +451,9 @@ impl NotesDatabase {
     /// Migración a versión 5: Recrear tabla FTS sin tokenizer Porter
     /// El tokenizer Porter causa problemas con búsqueda por prefijo (ej: "key" no encuentra "keybindings")
     fn migrate_to_v5(&mut self) -> Result<()> {
-        println!("Aplicando migración v5: Recreando tabla FTS sin Porter para mejor búsqueda por prefijo");
+        println!(
+            "Aplicando migración v5: Recreando tabla FTS sin Porter para mejor búsqueda por prefijo"
+        );
 
         // Verificar si la tabla notes_fts existe
         let fts_exists: bool = self
@@ -465,14 +467,12 @@ impl NotesDatabase {
 
         // 1. Obtener todos los datos actuales de la tabla FTS (solo si existe)
         let notes_data: Vec<(i64, String, String)> = if fts_exists {
-            let mut stmt = self.conn.prepare(
-                "SELECT rowid, name, content FROM notes_fts"
-            )?;
-            stmt.query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect()
+            let mut stmt = self
+                .conn
+                .prepare("SELECT rowid, name, content FROM notes_fts")?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
         } else {
             Vec::new()
         };

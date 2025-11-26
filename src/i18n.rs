@@ -734,17 +734,38 @@ impl I18n {
 
         // === QUICK NOTES ===
         translations.insert("quick_notes_title", ("Quick Notes", "Quick Notes"));
-        translations.insert("quick_note_back_to_list", ("Volver a la lista", "Back to list"));
+        translations.insert(
+            "quick_note_back_to_list",
+            ("Volver a la lista", "Back to list"),
+        );
         translations.insert("quick_note_new", ("Nueva quick note", "New quick note"));
-        translations.insert("quick_note_keep_visible", ("Mantener visible", "Keep visible"));
+        translations.insert(
+            "quick_note_keep_visible",
+            ("Mantener visible", "Keep visible"),
+        );
         translations.insert("quick_note_close", ("Cerrar (Esc)", "Close (Esc)"));
-        translations.insert("quick_note_no_notes", ("No hay quick notes aún", "No quick notes yet"));
-        translations.insert("quick_note_press_to_create", ("Presiona + para crear una", "Press + to create one"));
+        translations.insert(
+            "quick_note_no_notes",
+            ("No hay quick notes aún", "No quick notes yet"),
+        );
+        translations.insert(
+            "quick_note_press_to_create",
+            ("Presiona + para crear una", "Press + to create one"),
+        );
         translations.insert("quick_note_saved", ("💾 Guardado", "💾 Saved"));
         translations.insert("quick_note_unsaved", ("● Sin guardar", "● Unsaved"));
-        translations.insert("quick_note_autosaved", ("💾 Auto-guardado", "💾 Auto-saved"));
-        translations.insert("quick_note_shortcut_hint", ("Ctrl+S: guardar | Esc: cerrar", "Ctrl+S: save | Esc: close"));
-        translations.insert("quick_note_created", ("Quick note creada", "Quick note created"));
+        translations.insert(
+            "quick_note_autosaved",
+            ("💾 Auto-guardado", "💾 Auto-saved"),
+        );
+        translations.insert(
+            "quick_note_shortcut_hint",
+            ("Ctrl+S: guardar | Esc: cerrar", "Ctrl+S: save | Esc: close"),
+        );
+        translations.insert(
+            "quick_note_created",
+            ("Quick note creada", "Quick note created"),
+        );
 
         // === PLAYLIST EXTRAS ===
         translations.insert("playlist_new", ("🎵 Nueva", "🎵 New"));
@@ -752,12 +773,27 @@ impl I18n {
         translations.insert("playlist_clear", ("🗑️ Limpiar", "🗑️ Clear"));
         translations.insert("playlist_queue", ("Cola de reproducción", "Playback queue"));
         translations.insert("playlist_queue_empty", ("Cola vacía", "Queue empty"));
-        translations.insert("playlist_saved_playlists", ("Playlists guardadas", "Saved playlists"));
+        translations.insert(
+            "playlist_saved_playlists",
+            ("Playlists guardadas", "Saved playlists"),
+        );
         translations.insert("playlist_save_title", ("Guardar Playlist", "Save Playlist"));
-        translations.insert("playlist_name_prompt", ("Nombre de la playlist:", "Playlist name:"));
-        translations.insert("playlist_name_example", ("ej: Música relajante", "e.g.: Relaxing music"));
-        translations.insert("playlist_no_loaded", ("No hay playlist cargada", "No playlist loaded"));
-        translations.insert("playlist_no_saved", ("No hay playlists guardadas", "No saved playlists"));
+        translations.insert(
+            "playlist_name_prompt",
+            ("Nombre de la playlist:", "Playlist name:"),
+        );
+        translations.insert(
+            "playlist_name_example",
+            ("ej: Música relajante", "e.g.: Relaxing music"),
+        );
+        translations.insert(
+            "playlist_no_loaded",
+            ("No hay playlist cargada", "No playlist loaded"),
+        );
+        translations.insert(
+            "playlist_no_saved",
+            ("No hay playlists guardadas", "No saved playlists"),
+        );
         translations.insert("playlist_add_to", ("Agregar a playlist", "Add to playlist"));
         translations.insert("playlist_delete", ("Eliminar playlist", "Delete playlist"));
         translations.insert("play", ("Reproducir", "Play"));
@@ -765,81 +801,243 @@ impl I18n {
 
         // === BÚSQUEDA Y RESULTADOS ===
         translations.insert("searching_ellipsis", ("🔄 Buscando...", "🔄 Searching..."));
-        translations.insert("no_results_found", ("❌ No se encontraron resultados", "❌ No results found"));
-        translations.insert("found_relevant_notes", ("Encontré {} notas relevantes:", "Found {} relevant notes:"));
-        translations.insert("semantic_results", ("Resultados por similitud semántica", "Results by semantic similarity"));
-        translations.insert("ai_analyzing", ("🔄 El asistente de IA está analizando los resultados...", "🔄 The AI assistant is analyzing the results..."));
-        translations.insert("assistant_response", ("🧠 Respuesta del Asistente", "🧠 Assistant Response"));
+        translations.insert(
+            "no_results_found",
+            ("❌ No se encontraron resultados", "❌ No results found"),
+        );
+        translations.insert(
+            "found_relevant_notes",
+            ("Encontré {} notas relevantes:", "Found {} relevant notes:"),
+        );
+        translations.insert(
+            "semantic_results",
+            (
+                "Resultados por similitud semántica",
+                "Results by semantic similarity",
+            ),
+        );
+        translations.insert(
+            "ai_analyzing",
+            (
+                "🔄 El asistente de IA está analizando los resultados...",
+                "🔄 The AI assistant is analyzing the results...",
+            ),
+        );
+        translations.insert(
+            "assistant_response",
+            ("🧠 Respuesta del Asistente", "🧠 Assistant Response"),
+        );
 
         // === UI GENERAL ===
         translations.insert("images_filter", ("Imágenes", "Images"));
-        translations.insert("no_models_found", ("No se encontraron modelos", "No models found"));
-        translations.insert("semantic_search_title", ("🧠 Búsqueda Semántica (Embeddings)", "🧠 Semantic Search (Embeddings)"));
-        translations.insert("semantic_search_description", ("Configura embeddings para búsqueda por significado conceptual usando OpenRouter", "Configure embeddings for conceptual meaning search using OpenRouter"));
-        translations.insert("enable_embeddings", ("Habilitar embeddings:", "Enable embeddings:"));
-        translations.insert("index_all_notes", ("📄 Indexar todas las notas", "📄 Index all notes"));
+        translations.insert(
+            "no_models_found",
+            ("No se encontraron modelos", "No models found"),
+        );
+        translations.insert(
+            "semantic_search_title",
+            (
+                "🧠 Búsqueda Semántica (Embeddings)",
+                "🧠 Semantic Search (Embeddings)",
+            ),
+        );
+        translations.insert(
+            "semantic_search_description",
+            (
+                "Configura embeddings para búsqueda por significado conceptual usando OpenRouter",
+                "Configure embeddings for conceptual meaning search using OpenRouter",
+            ),
+        );
+        translations.insert(
+            "enable_embeddings",
+            ("Habilitar embeddings:", "Enable embeddings:"),
+        );
+        translations.insert(
+            "index_all_notes",
+            ("📄 Indexar todas las notas", "📄 Index all notes"),
+        );
         translations.insert("indexing", ("⏳ Indexando...", "⏳ Indexing..."));
-        translations.insert("indexing_completed", ("Indexación completada", "Indexing completed"));
+        translations.insert(
+            "indexing_completed",
+            ("Indexación completada", "Indexing completed"),
+        );
         translations.insert("unknown_error", ("Error desconocido", "Unknown error"));
-        translations.insert("estimated_cost", ("Costo estimado: ~$0.01 por 10,000 notas", "Estimated cost: ~$0.01 per 10,000 notes"));
-        translations.insert("get_api_key_openrouter", ("Obtener API key en OpenRouter", "Get API key on OpenRouter"));
+        translations.insert(
+            "estimated_cost",
+            (
+                "Costo estimado: ~$0.01 por 10,000 notas",
+                "Estimated cost: ~$0.01 per 10,000 notes",
+            ),
+        );
+        translations.insert(
+            "get_api_key_openrouter",
+            ("Obtener API key en OpenRouter", "Get API key on OpenRouter"),
+        );
         translations.insert("status_active", ("🟢 Activo", "🟢 Active"));
         translations.insert("copy_url", ("📋 Copiar URL", "📋 Copy URL"));
-        translations.insert("view_docs", ("📖 Ver Documentación", "📖 View Documentation"));
+        translations.insert(
+            "view_docs",
+            ("📖 Ver Documentación", "📖 View Documentation"),
+        );
         translations.insert("copied", ("✓ Copiado!", "✓ Copied!"));
         translations.insert("you_label", ("Tú", "You"));
-        translations.insert("no_notes_in_context", ("Sin notas en contexto", "No notes in context"));
-        translations.insert("remove_from_context", ("Remover del contexto", "Remove from context"));
-        translations.insert("operation_success", ("✓ Operación exitosa", "✓ Operation successful"));
-        translations.insert("operation_failed", ("✗ Operación fallida", "✗ Operation failed"));
-        translations.insert("youtube_unavailable", ("Transcripción de YouTube no disponible actualmente...", "YouTube transcription not currently available..."));
+        translations.insert(
+            "no_notes_in_context",
+            ("Sin notas en contexto", "No notes in context"),
+        );
+        translations.insert(
+            "remove_from_context",
+            ("Remover del contexto", "Remove from context"),
+        );
+        translations.insert(
+            "operation_success",
+            ("✓ Operación exitosa", "✓ Operation successful"),
+        );
+        translations.insert(
+            "operation_failed",
+            ("✗ Operación fallida", "✗ Operation failed"),
+        );
+        translations.insert(
+            "youtube_unavailable",
+            (
+                "Transcripción de YouTube no disponible actualmente...",
+                "YouTube transcription not currently available...",
+            ),
+        );
         translations.insert("music_player", ("Reproductor de música", "Music Player"));
 
         // === ATAJOS DE TECLADO (extras) ===
-        translations.insert("shortcut_open_note_search", ("Abrir búsqueda de notas", "Open note search"));
-        translations.insert("shortcut_toggle_ai_chat", ("Alternar chat IA", "Toggle AI chat"));
-        translations.insert("shortcut_delete_char_under", ("Eliminar carácter bajo el cursor", "Delete character under cursor"));
-        translations.insert("shortcut_delete_line_complete", ("Eliminar línea completa", "Delete entire line"));
-        translations.insert("shortcut_delete_prev_char", ("Eliminar carácter anterior", "Delete previous character"));
-        translations.insert("shortcut_delete_next_char", ("Eliminar carácter siguiente", "Delete next character"));
+        translations.insert(
+            "shortcut_open_note_search",
+            ("Abrir búsqueda de notas", "Open note search"),
+        );
+        translations.insert(
+            "shortcut_toggle_ai_chat",
+            ("Alternar chat IA", "Toggle AI chat"),
+        );
+        translations.insert(
+            "shortcut_delete_char_under",
+            (
+                "Eliminar carácter bajo el cursor",
+                "Delete character under cursor",
+            ),
+        );
+        translations.insert(
+            "shortcut_delete_line_complete",
+            ("Eliminar línea completa", "Delete entire line"),
+        );
+        translations.insert(
+            "shortcut_delete_prev_char",
+            ("Eliminar carácter anterior", "Delete previous character"),
+        );
+        translations.insert(
+            "shortcut_delete_next_char",
+            ("Eliminar carácter siguiente", "Delete next character"),
+        );
         translations.insert("shortcut_new_line", ("Nueva línea", "New line"));
-        translations.insert("shortcut_search_sidebar", ("Búsqueda y Sidebar", "Search and Sidebar"));
-        translations.insert("shortcut_activate_search", ("Activar búsqueda", "Activate search"));
-        translations.insert("shortcut_close_search", ("Cerrar búsqueda / Volver al editor", "Close search / Back to editor"));
-        translations.insert("shortcut_open_music", ("Abrir reproductor de música", "Open music player"));
-        translations.insert("shortcut_open_reminders", ("Abrir recordatorios", "Open reminders"));
+        translations.insert(
+            "shortcut_search_sidebar",
+            ("Búsqueda y Sidebar", "Search and Sidebar"),
+        );
+        translations.insert(
+            "shortcut_activate_search",
+            ("Activar búsqueda", "Activate search"),
+        );
+        translations.insert(
+            "shortcut_close_search",
+            (
+                "Cerrar búsqueda / Volver al editor",
+                "Close search / Back to editor",
+            ),
+        );
+        translations.insert(
+            "shortcut_open_music",
+            ("Abrir reproductor de música", "Open music player"),
+        );
+        translations.insert(
+            "shortcut_open_reminders",
+            ("Abrir recordatorios", "Open reminders"),
+        );
 
         // === ADDING CONTENT (AI) ===
-        translations.insert("adding_content", ("Añadiendo contenido...", "Adding content..."));
+        translations.insert(
+            "adding_content",
+            ("Añadiendo contenido...", "Adding content..."),
+        );
         translations.insert("adding_tag", ("Añadiendo etiqueta...", "Adding tag..."));
         translations.insert("adding_tags", ("Añadiendo etiquetas...", "Adding tags..."));
-        translations.insert("generating_index", ("Generando índice...", "Generating index..."));
-        translations.insert("extracting_code", ("Extrayendo código...", "Extracting code..."));
+        translations.insert(
+            "generating_index",
+            ("Generando índice...", "Generating index..."),
+        );
+        translations.insert(
+            "extracting_code",
+            ("Extrayendo código...", "Extracting code..."),
+        );
 
         // === TOOLTIPS DEL FOOTER E INTERFAZ ===
-        translations.insert("tooltip_show_hide_notes", ("Mostrar/ocultar lista de notas", "Show/hide notes list"));
+        translations.insert(
+            "tooltip_show_hide_notes",
+            ("Mostrar/ocultar lista de notas", "Show/hide notes list"),
+        );
         translations.insert("tooltip_new_note", ("Nueva nota", "New note"));
-        translations.insert("tooltip_change_search_mode", ("Ctrl para cambiar modo", "Ctrl to change mode"));
+        translations.insert(
+            "tooltip_change_search_mode",
+            ("Ctrl para cambiar modo", "Ctrl to change mode"),
+        );
         translations.insert("tooltip_close_esc", ("Cerrar (Esc)", "Close (Esc)"));
         translations.insert("tooltip_note_tags", ("Tags de la nota", "Note tags"));
         translations.insert("tooltip_note_todos", ("TODOs de la nota", "Note TODOs"));
-        translations.insert("tooltip_music_player", ("Reproductor de música", "Music player"));
-        translations.insert("tooltip_reminders", ("Recordatorios (Alt+R)", "Reminders (Alt+R)"));
+        translations.insert(
+            "tooltip_music_player",
+            ("Reproductor de música", "Music player"),
+        );
+        translations.insert(
+            "tooltip_reminders",
+            ("Recordatorios (Alt+R)", "Reminders (Alt+R)"),
+        );
         translations.insert("tooltip_settings", ("Ajustes", "Settings"));
 
         // === AI SETTINGS ===
         translations.insert("temperature_label", ("Temperatura:", "Temperature:"));
         translations.insert("max_tokens_label", ("Max Tokens:", "Max Tokens:"));
         translations.insert("unlimited", ("Ilimitado", "Unlimited"));
-        translations.insert("save_history_label", ("Guardar historial:", "Save history:"));
+        translations.insert(
+            "save_history_label",
+            ("Guardar historial:", "Save history:"),
+        );
         translations.insert("model_label", ("Modelo:", "Model:"));
-        translations.insert("refresh_models_tooltip", ("Actualizar lista de modelos desde OpenRouter", "Refresh model list from OpenRouter"));
-        translations.insert("search_model_placeholder", ("Buscar modelo...", "Search model..."));
+        translations.insert(
+            "refresh_models_tooltip",
+            (
+                "Actualizar lista de modelos desde OpenRouter",
+                "Refresh model list from OpenRouter",
+            ),
+        );
+        translations.insert(
+            "search_model_placeholder",
+            ("Buscar modelo...", "Search model..."),
+        );
 
         // === ALERTAS DE MODO AGENTE/CHAT ===
-        translations.insert("agent_mode_activated", ("Modo Agente activado\nEl asistente puede buscar en notas y ejecutar acciones", "Agent Mode activated\nThe assistant can search notes and execute actions"));
-        translations.insert("chat_mode_activated", ("Chat Normal activado\nConversación directa sin acceso a herramientas", "Normal Chat activated\nDirect conversation without tool access"));
-        translations.insert("analyzing_task", ("Analizando tarea...", "Analyzing task..."));
+        translations.insert(
+            "agent_mode_activated",
+            (
+                "Modo Agente activado\nEl asistente puede buscar en notas y ejecutar acciones",
+                "Agent Mode activated\nThe assistant can search notes and execute actions",
+            ),
+        );
+        translations.insert(
+            "chat_mode_activated",
+            (
+                "Chat Normal activado\nConversación directa sin acceso a herramientas",
+                "Normal Chat activated\nDirect conversation without tool access",
+            ),
+        );
+        translations.insert(
+            "analyzing_task",
+            ("Analizando tarea...", "Analyzing task..."),
+        );
 
         Self {
             language,

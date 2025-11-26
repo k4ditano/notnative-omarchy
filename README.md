@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Your second brain. Native, fast, and powerful FOR OMARCHY LOVERS**
+**Your second brain. Native, fast, and powerful.**
 
 A modern note-taking app built for Linux with Vim-like editing, AI chat, MCP automation, and YouTube integration.
 
@@ -51,9 +51,7 @@ https://github.com/k4ditano/notnative-app/raw/master/screenshots/screensaver.mp4
 
 **🌍 Multi-language** - Full i18n support (English/Spanish). More languages coming.
 
-**🎨 Beautiful** - Adaptive themes. Markdown rendering. Clean, distraction-free interface.
-
-**🖌️ Omarchy Themes** - Native integration with Omarchy theme system. Works with Aether and Omarchist theme apps.
+**🎨 Beautiful** - Adaptive themes. WebView HTML preview. Clean, distraction-free interface.
 
 ---
 
@@ -73,8 +71,8 @@ sudo apt install libgtk-4-dev mpv yt-dlp  # Ubuntu/Debian
 sudo dnf install gtk4-devel mpv yt-dlp    # Fedora
 
 # Build from source
-git clone https://github.com/k4ditano/notnative-omarchy.git
-cd notnative-omarchy/notnative-app
+git clone https://github.com/k4ditano/notnative-app.git
+cd notnative-app/notnative-app
 cargo build --release
 sudo ./install.sh
 ```
@@ -85,28 +83,29 @@ sudo ./install.sh
 
 ### 📝 Smart Editor
 - **Vim-inspired modal editing** - Normal, Insert, Visual, Command modes
-- **Real-time Markdown rendering** - See formatted text as you type
+- **WebView HTML preview** - Beautiful Obsidian-style rendering in Normal mode (v0.1.2)
+- **Centered content layout** - Comfortable reading experience, both edit and preview modes (v0.1.2)
+- **Keyboard scroll in preview** - Navigate with arrows/j/k/PgUp/PgDown in Normal mode (v0.1.2)
 - **Lightning-fast buffer** - Powered by ropey, handles huge documents
 - **Interactive TODOs** - Click checkboxes to mark tasks complete
 - **Smart tag system** - #tags clickable anywhere, even at line start
-- **YAML frontmatter tags** - Tags in lists (• tag) are also clickable
+- **YAML frontmatter tags** - Tags in lists (• tag) are also clickable with special chars support (v0.1.2)
 - **Precise tag search** - Search #tag finds only that specific tag
 - **Image preview** - See images inline, click to open
-- **🔗 Backlinks with @mentions** - Link notes with `@NoteName`, autocomplete included (v0.1.8)
-- **🔗 Smart URL detection** - Pasted URLs auto-convert to markdown links (v0.1.8)
-- **📂 Open in file manager** - Right-click notes/folders → open in explorer (v0.1.8)
+- **🔗 Backlinks with @mentions** - Link notes with `@NoteName`, autocomplete included
+- **🔗 Smart URL detection** - Pasted URLs auto-convert to markdown links
+- **📂 Open in file manager** - Right-click notes/folders → open in explorer
 
 ### 🤖 AI Integration
 - **Chat with AI** - Ask questions about your notes
 - **OpenAI & OpenRouter support** - Use GPT-4, Claude, or any LLM
 - **Context-aware** - Attach notes as context for better answers
 - **Smart suggestions** - AI helps you write better
-- **40+ MCP tools available** - Advanced automation capabilities (v0.1.6)
-- **Enhanced AI workflows** - More powerful integrations and automations (v0.1.6)
+- **40+ MCP tools available** - Advanced automation capabilities
 
 ### 🔌 Automation & API
 - **MCP Server included** - REST API on port 8788
-- **40+ powerful tools** - Comprehensive automation toolkit (v0.1.6)
+- **40+ powerful tools** - Comprehensive automation toolkit
 - **External control** - Integrate with n8n, Python, curl, anything
 - **iOS Shortcuts ready** - Capture notes from your phone
 - **Telegram bot support** - Send messages directly to your notes
@@ -124,7 +123,7 @@ sudo ./install.sh
 - **Folder organization** - Nested folders, drag & drop
 - **Full-text search** - Find anything instantly with SQLite FTS
 - **Tag system** - Organize with tags, auto-completion included
-- **Omarchy theme integration** - Auto-adapts to system themes from Aether and Omarchist apps
+- **Adaptive themes** - Works with your system's color scheme
 - **Real-time theme switching** - Changes instantly when you switch themes
 
 ---
@@ -222,10 +221,13 @@ curl -X POST http://localhost:8788/mcp/call_tool \
 - [x] YouTube player
 - [x] System tray
 - [x] Multi-language (i18n)
-- [x] 40+ MCP automation tools (v0.1.6)
-- [x] Smart tag system (v0.1.6)
-- [x] YAML frontmatter clickable tags (v0.1.6)
-- [x] Precise tag-based search (v0.1.6)
+- [x] 40+ MCP automation tools
+- [x] Smart tag system
+- [x] YAML frontmatter clickable tags
+- [x] Precise tag-based search
+- [x] WebView HTML preview (v0.1.2)
+- [x] Keyboard scroll in preview (v0.1.2)
+- [x] Centered content layout (v0.1.2)
 - [ ] Mobile app (planned)
 - [ ] End-to-end encryption (planned)
 - [ ] Cloud sync (planned)
@@ -246,10 +248,10 @@ We welcome contributions! Open an issue or submit a PR.
 
 <div align="center">
 
-**Built with ❤️ for [Omarchy OS](https://omarchy.org) by [k4ditano](https://github.com/k4ditano)**
+**Built with ❤️ for Linux by [k4ditano](https://github.com/k4ditano)**
 
 ⭐ Star this repo if you find it useful!
 
-[Report Bug](https://github.com/k4ditano/notnative-omarchy/issues) • [Request Feature](https://github.com/k4ditano/notnative-omarchy/issues)
+[Report Bug](https://github.com/k4ditano/notnative-app/issues) • [Request Feature](https://github.com/k4ditano/notnative-app/issues)
 
 </div>

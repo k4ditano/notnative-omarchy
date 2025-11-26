@@ -11,6 +11,17 @@ window {
   color: @text;
 }
 
+/* Paned separator - minimizar el espacio del handle */
+paned > separator {
+  min-width: 1px;
+  min-height: 1px;
+  background: transparent;
+}
+
+paned > separator.wide {
+  min-width: 1px;
+}
+
 /* HeaderBar */
 headerbar {
   background-color: @base;
@@ -262,16 +273,27 @@ textview text {
 
 /* Scrollbars discretas con colores del tema */
 scrollbar {
-  background-color: alpha(@base, 0.5);
+  background-color: transparent;
 }
 
 scrollbar slider {
   background-color: alpha(@text, 0.3);
   border-radius: 4px;
+  min-width: 6px;
+  min-height: 6px;
 }
 
 scrollbar slider:hover {
   background-color: alpha(@text, 0.5);
+}
+
+/* Scrollbar overlay para no ocupar espacio del contenido */
+scrolledwindow > scrollbar {
+  background: transparent;
+}
+
+scrolledwindow > scrollbar.vertical {
+  margin-left: -6px;
 }
 
 /* Menú de ajustes minimalista */

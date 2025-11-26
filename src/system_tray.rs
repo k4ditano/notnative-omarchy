@@ -242,7 +242,9 @@ pub fn create_system_tray(
     });
 
     println!("✅ Sistema de control inicializado");
-    println!("💡 Controla la app con: echo 'show|hide|toggle|quicknote|quicknote-new|quit' > /tmp/notnative.control");
+    println!(
+        "💡 Controla la app con: echo 'show|hide|toggle|quicknote|quicknote-new|quit' > /tmp/notnative.control"
+    );
     println!("💡 O usa el icono de la bandeja del sistema si está disponible");
     println!("📝 Quick Notes: echo 'quicknote' > /tmp/notnative.control");
 }
