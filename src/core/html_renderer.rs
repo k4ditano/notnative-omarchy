@@ -209,6 +209,58 @@ impl HtmlRenderer {
             .replace_all(&result, r#"<span class="reminder">$1 $2</span>"#)
             .to_string();
 
+        // Convertir recordatorios con formato !!RECORDAR(fecha prioridad repeat, texto) o !!REMIND(...)
+        // Formato V2: !!RECORDAR(2025-11-28 10:00 medium repeat=daily, Texto del recordatorio)
+        let recordar_re = Regex::new(r"!!(?:RECORDAR|REMIND)\(([^,]+),\s*([^)]+)\)").unwrap();
+        result = recordar_re
+            .replace_all(&result, |caps: &regex::Captures| {
+                let params = caps[1].trim();
+                let text = caps[2].trim();
+
+                // Parsear los parámetros para extraer fecha, prioridad y repetición
+                let parts: Vec<&str> = params.split_whitespace().collect();
+
+                // Detectar fecha (formato YYYY-MM-DD o palabras como "hoy", "mañana")
+                let mut date_parts: Vec<&str> = Vec::new();
+                let mut priority = "";
+                let mut repeat = "";
+
+                for part in parts.iter() {
+                    if part.starts_with("repeat=") || part.starts_with("repetir=") {
+                        repeat = part.split('=').nth(1).unwrap_or("");
+                    } else if *part == "low" || *part == "medium" || *part == "high" || *part == "urgent"
+                             || *part == "baja" || *part == "media" || *part == "alta" || *part == "urgente" {
+                        priority = part;
+                    } else {
+                        date_parts.push(part);
+                    }
+                }
+
+                let date_str = date_parts.join(" ");
+
+                // Determinar el icono basado en la prioridad
+                let (icon, priority_class) = match priority {
+                    "urgent" | "urgente" => ("🔴", "priority-urgent"),
+                    "high" | "alta" => ("🟠", "priority-high"),
+                    "medium" | "media" => ("🟡", "priority-medium"),
+                    "low" | "baja" => ("🟢", "priority-low"),
+                    _ => ("🔔", "priority-normal"),
+                };
+
+                // Construir información de repetición si existe
+                let repeat_info = if !repeat.is_empty() {
+                    format!(r#" <span class="reminder-repeat">🔄 {}</span>"#, repeat)
+                } else {
+                    String::new()
+                };
+
+                format!(
+                    r#"<div class="reminder-widget {}"><span class="reminder-icon">{}</span><span class="reminder-date">📅 {}</span><span class="reminder-text">{}</span>{}</div>"#,
+                    priority_class, icon, date_str, text, repeat_info
+                )
+            })
+            .to_string();
+
         result
     }
 
@@ -513,7 +565,7 @@ a.tag-link:hover {
     border: none;
 }
 
-/* Recordatorios */
+/* Recordatorios simples (con emojis) */
 .reminder {
     display: inline-block;
     background-color: rgba(166, 227, 161, 0.15);
@@ -522,6 +574,71 @@ a.tag-link:hover {
     border-radius: 0 6px 6px 0;
     margin: 4px 0;
     font-size: 0.95em;
+}
+
+/* Recordatorios con formato !!RECORDAR() */
+.reminder-widget {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    flex-wrap: wrap;
+}
+
+.reminder-widget.priority-urgent {
+    border-left: 4px solid #f38ba8;
+    background: linear-gradient(135deg, rgba(243, 139, 168, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.reminder-widget.priority-high {
+    border-left: 4px solid #fab387;
+    background: linear-gradient(135deg, rgba(250, 179, 135, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.reminder-widget.priority-medium {
+    border-left: 4px solid #f9e2af;
+    background: linear-gradient(135deg, rgba(249, 226, 175, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.reminder-widget.priority-low {
+    border-left: 4px solid #a6e3a1;
+    background: linear-gradient(135deg, rgba(166, 227, 161, 0.1) 0%, var(--bg-secondary) 100%);
+}
+
+.reminder-widget.priority-normal {
+    border-left: 4px solid var(--accent);
+}
+
+.reminder-icon {
+    font-size: 1.4em;
+    flex-shrink: 0;
+}
+
+.reminder-date {
+    color: var(--fg-secondary);
+    font-size: 0.9em;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.reminder-text {
+    color: var(--fg-primary);
+    font-weight: 500;
+    flex-grow: 1;
+}
+
+.reminder-repeat {
+    color: var(--accent);
+    font-size: 0.85em;
+    background: rgba(137, 180, 250, 0.15);
+    padding: 2px 8px;
+    border-radius: 12px;
+    white-space: nowrap;
 }
 
 /* Code */

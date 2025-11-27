@@ -201,8 +201,9 @@ impl QuickNoteWindow {
         let t_shortcut_hint = i18n.borrow().t("quick_note_shortcut_hint");
 
         // Crear ventana flotante
+        // Usamos "Quick Note" (singular) para que coincida con las reglas de Hyprland
         let window = gtk::Window::builder()
-            .title(&t_title)
+            .title("Quick Note")
             .default_width(450)
             .default_height(400)
             .modal(false)
@@ -212,6 +213,9 @@ impl QuickNoteWindow {
 
         // NO usar transient_for para que la ventana se abra en el monitor del ratón
         // window.set_transient_for(Some(parent));
+
+        // Establecer tamaño máximo y mínimo para evitar que se maximice
+        window.set_size_request(400, 350);
 
         // CSS class para estilos personalizados
         window.add_css_class("quick-note-window");

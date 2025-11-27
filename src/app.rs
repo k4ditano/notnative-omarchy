@@ -17861,8 +17861,8 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .title(&i18n.t("keyboard_shortcuts"))
-            .default_width(600)
-            .default_height(500)
+            .default_width(650)
+            .default_height(600)
             .build();
 
         let scrolled = gtk::ScrolledWindow::builder().vexpand(true).build();
@@ -17884,84 +17884,97 @@ impl MainApp {
         title.add_css_class("title-2");
         content_box.append(&title);
 
-        // Lista de atajos (solo los que están implementados)
-        let shortcuts = vec![
+        // Lista de atajos actualizada basada en KEYBINDINGS.md
+        let shortcuts: Vec<(String, Vec<(&str, String)>)> = vec![
             (
-                "General",
+                i18n.t("shortcuts_global"),
                 vec![
-                    ("Ctrl+S", "Guardar nota actual"),
-                    ("Ctrl+F", "Abrir búsqueda de notas"),
-                    ("Ctrl+B / t", "Abrir/cerrar sidebar (en modo Normal)"),
-                    ("n", "Nueva nota (en modo Normal)"),
+                    ("Ctrl+F", i18n.t("shortcut_global_search")),
+                    ("Alt+F", i18n.t("shortcut_note_search")),
+                    ("Ctrl+Shift+A", i18n.t("shortcut_enter_ai_chat")),
+                    ("Ctrl+S", i18n.t("shortcut_save")),
                 ],
             ),
             (
-                "Modos de edición (desde Normal)",
+                i18n.t("shortcuts_quick_notes"),
                 vec![
-                    ("i", "Entrar en modo Insert"),
-                    (":", "Entrar en modo Command"),
-                    ("v", "Entrar en modo Visual"),
-                    ("Escape", "Volver a modo Normal (desde Insert)"),
+                    ("Esc", i18n.t("shortcut_back_or_close")),
+                    ("Ctrl+S", i18n.t("shortcut_save")),
                 ],
             ),
             (
-                "Navegación (modo Normal)",
+                i18n.t("shortcuts_normal_navigation"),
                 vec![
-                    ("h / ←", "Izquierda"),
-                    ("j / ↓", "Abajo"),
-                    ("k / ↑", "Arriba"),
-                    ("l / →", "Derecha"),
-                    ("0", "Inicio de línea"),
-                    ("$", "Fin de línea"),
-                    ("gg", "Inicio del documento"),
-                    ("G", "Fin del documento"),
+                    ("h / ←", i18n.t("shortcut_left")),
+                    ("j / ↓", i18n.t("shortcut_down")),
+                    ("k / ↑", i18n.t("shortcut_up")),
+                    ("l / →", i18n.t("shortcut_right")),
+                    ("0", i18n.t("shortcut_line_start")),
+                    ("$", i18n.t("shortcut_line_end")),
+                    ("gg", i18n.t("shortcut_doc_start")),
+                    ("G", i18n.t("shortcut_doc_end")),
                 ],
             ),
             (
-                "Navegación (modo Insert)",
-                vec![("←/→/↑/↓", "Mover cursor")],
-            ),
-            (
-                "Edición (modo Normal)",
+                i18n.t("shortcuts_normal_editing"),
                 vec![
-                    ("x", "Eliminar carácter bajo el cursor"),
-                    ("dd", "Eliminar línea completa"),
-                    ("u", "Deshacer"),
-                    ("Ctrl+Z", "Deshacer"),
-                    ("Ctrl+R", "Rehacer"),
-                    ("Ctrl+C", "Copiar texto seleccionado"),
-                    ("Ctrl+X", "Cortar texto seleccionado"),
-                    ("Ctrl+V", "Pegar desde portapapeles"),
+                    ("i", i18n.t("shortcut_insert_mode")),
+                    ("a", i18n.t("shortcut_ai_chat_mode")),
+                    ("v", i18n.t("shortcut_visual_mode")),
+                    (":", i18n.t("shortcut_command_mode")),
+                    ("n", i18n.t("shortcut_new_note")),
+                    ("x", i18n.t("shortcut_delete_char_under")),
+                    ("dd", i18n.t("shortcut_delete_line_complete")),
+                    ("u", i18n.t("shortcut_undo")),
+                    ("t", i18n.t("shortcut_toggle_sidebar")),
                 ],
             ),
             (
-                "Edición (modo Insert)",
+                i18n.t("shortcuts_insert_mode"),
                 vec![
-                    ("Backspace", "Eliminar carácter anterior"),
-                    ("Delete", "Eliminar carácter siguiente"),
-                    ("Enter", "Nueva línea"),
-                    ("Tab", "Insertar tabulación"),
-                    ("Ctrl+C", "Copiar texto seleccionado"),
-                    ("Ctrl+X", "Cortar texto seleccionado"),
-                    ("Ctrl+V", "Pegar desde portapapeles"),
-                    ("Ctrl+Z", "Deshacer"),
-                    ("Ctrl+R", "Rehacer"),
+                    ("Esc", i18n.t("shortcut_normal_mode")),
+                    ("Ctrl+S", i18n.t("shortcut_save")),
+                    ("Ctrl+T", i18n.t("shortcut_insert_table")),
+                    ("Ctrl+Shift+I", i18n.t("shortcut_insert_image")),
+                    ("Tab", i18n.t("shortcut_tab_autocomplete")),
+                    ("Ctrl+Z", i18n.t("shortcut_undo")),
+                    ("Ctrl+R", i18n.t("shortcut_redo")),
                 ],
             ),
             (
-                "Búsqueda y Sidebar",
+                i18n.t("shortcuts_ai_chat"),
                 vec![
-                    ("Ctrl+F", "Activar búsqueda"),
-                    ("Escape", "Cerrar búsqueda / Volver al editor"),
-                    ("↑/↓", "Navegar resultados (con foco en sidebar)"),
-                    ("Enter", "Abrir nota / Expandir carpeta"),
+                    ("Esc", i18n.t("shortcut_exit_chat")),
+                    ("i", i18n.t("shortcut_exit_chat_insert")),
+                    ("Enter", i18n.t("shortcut_send_message")),
+                    ("Shift+Enter", i18n.t("shortcut_new_line")),
+                    ("↑/↓", i18n.t("shortcut_navigate_suggestions")),
+                    ("Tab", i18n.t("shortcut_accept_suggestion")),
+                ],
+            ),
+            (
+                i18n.t("shortcuts_sidebar"),
+                vec![
+                    ("j / ↓", i18n.t("shortcut_next_note")),
+                    ("k / ↑", i18n.t("shortcut_prev_note")),
+                    ("Enter", i18n.t("shortcut_open_note")),
+                    ("Esc", i18n.t("shortcut_focus_editor")),
+                ],
+            ),
+            (
+                i18n.t("shortcuts_floating_search"),
+                vec![
+                    ("Esc", i18n.t("shortcut_close_search")),
+                    ("Ctrl", i18n.t("shortcut_toggle_semantic")),
+                    ("↑/↓", i18n.t("shortcut_navigate_results")),
+                    ("Enter", i18n.t("shortcut_open_selected")),
                 ],
             ),
         ];
 
         for (section, items) in shortcuts {
             let section_label = gtk::Label::builder()
-                .label(section)
+                .label(section.as_str())
                 .halign(gtk::Align::Start)
                 .margin_top(12)
                 .build();
@@ -17986,13 +17999,15 @@ impl MainApp {
                 let shortcut_label = gtk::Label::builder()
                     .label(shortcut)
                     .halign(gtk::Align::Start)
+                    .width_chars(16)
                     .build();
                 shortcut_label.add_css_class("monospace");
 
                 let desc_label = gtk::Label::builder()
-                    .label(description)
+                    .label(description.as_str())
                     .halign(gtk::Align::Start)
                     .hexpand(true)
+                    .wrap(true)
                     .build();
                 desc_label.add_css_class("dim-label");
 
@@ -18218,7 +18233,7 @@ impl MainApp {
         let dialog = gtk::Window::builder()
             .transient_for(&self.main_window)
             .modal(true)
-            .title("MCP Server - Model Context Protocol")
+            .title(&i18n.t("mcp_server_title"))
             .default_width(500)
             .default_height(300)
             .build();
@@ -18249,14 +18264,14 @@ impl MainApp {
             .build();
 
         let title_label = gtk::Label::builder()
-            .label("<b>MCP Server Activo</b>")
+            .label(&format!("<b>{}</b>", i18n.t("mcp_server_active")))
             .use_markup(true)
             .xalign(0.0)
             .build();
         title_label.add_css_class("title-2");
 
         let subtitle_label = gtk::Label::builder()
-            .label("Exponiendo herramientas de NotNative via HTTP")
+            .label(&i18n.t("mcp_server_subtitle"))
             .xalign(0.0)
             .build();
         subtitle_label.add_css_class("dim-label");
@@ -18286,13 +18301,16 @@ impl MainApp {
             .build();
 
         let status_label_key = gtk::Label::builder()
-            .label("<b>Estado:</b>")
+            .label(&format!("<b>{}:</b>", i18n.t("mcp_status")))
             .use_markup(true)
             .xalign(0.0)
             .width_chars(15)
             .build();
 
-        let status_indicator = gtk::Label::builder().label("🟢 Activo").xalign(0.0).build();
+        let status_indicator = gtk::Label::builder()
+            .label(&i18n.t("status_active"))
+            .xalign(0.0)
+            .build();
 
         status_row.append(&status_label_key);
         status_row.append(&status_indicator);
@@ -18321,7 +18339,7 @@ impl MainApp {
 
         // Endpoints
         let endpoints_label = gtk::Label::builder()
-            .label("<b>Endpoints disponibles:</b>")
+            .label(&format!("<b>{}:</b>", i18n.t("mcp_endpoints_available")))
             .use_markup(true)
             .xalign(0.0)
             .margin_top(8)
@@ -18369,24 +18387,25 @@ impl MainApp {
             .halign(gtk::Align::Center)
             .build();
 
-        let copy_url_btn = gtk::Button::builder().label("📋 Copiar URL").build();
+        let copy_url_btn = gtk::Button::builder().label(&i18n.t("copy_url")).build();
 
-        let docs_btn = gtk::Button::builder().label("📖 Ver Documentación").build();
+        let docs_btn = gtk::Button::builder().label(&i18n.t("view_docs")).build();
 
-        let close_btn = gtk::Button::builder().label("Cerrar").build();
+        let close_btn = gtk::Button::builder().label(&i18n.t("close")).build();
 
         buttons_box.append(&copy_url_btn);
         buttons_box.append(&docs_btn);
         buttons_box.append(&close_btn);
 
         // Conectar eventos
+        let copied_text = i18n.t("copied");
         copy_url_btn.connect_clicked(move |btn| {
             if let Some(display) = gtk::gdk::Display::default() {
                 let clipboard = display.clipboard();
                 clipboard.set_text("http://localhost:8788");
 
                 let original_label = btn.label().unwrap_or_default();
-                btn.set_label("✓ Copiado!");
+                btn.set_label(&copied_text);
 
                 let btn_clone = btn.clone();
                 gtk::glib::timeout_add_local_once(

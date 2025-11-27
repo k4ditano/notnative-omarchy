@@ -15,31 +15,31 @@ Para poder abrir Quick Notes desde cualquier aplicación (incluso juegos fullscr
 **Para Hyprland** (`~/.config/hypr/hyprland.conf`):
 ```conf
 # Quick Notes
-bind = SUPER, N, exec, echo 'quicknote' > /tmp/notnative.control
-bind = SUPER SHIFT, N, exec, echo 'quicknote-new' > /tmp/notnative.control
+bind = SUPER, period, exec, echo 'quicknote' > /tmp/notnative.control
+bind = SUPER SHIFT, period, exec, echo 'quicknote-new' > /tmp/notnative.control
 
 # Toggle ventana principal de NotNative
-bind = SUPER, M, exec, echo 'toggle' > /tmp/notnative.control
+bind = SUPER, N, exec, echo 'toggle' > /tmp/notnative.control
 ```
 
 **Para i3/Sway** (`~/.config/i3/config` o `~/.config/sway/config`):
 ```conf
-bindsym $mod+n exec echo 'quicknote' > /tmp/notnative.control
-bindsym $mod+Shift+n exec echo 'quicknote-new' > /tmp/notnative.control
-bindsym $mod+m exec echo 'toggle' > /tmp/notnative.control
+bindsym $mod+period exec echo 'quicknote' > /tmp/notnative.control
+bindsym $mod+Shift+period exec echo 'quicknote-new' > /tmp/notnative.control
+bindsym $mod+n exec echo 'toggle' > /tmp/notnative.control
 ```
 
 #### Paso 2: Reglas de ventana (para que Quick Notes sea flotante y siempre visible)
 
-**Para Hyprland**:
+**Para Hyprland** (`~/.config/hypr/hyprland.conf`):
 ```conf
-windowrulev2 = float, class:^(com.notnative.app)$, title:^(Quick Note)$
-windowrulev2 = pin, class:^(com.notnative.app)$, title:^(Quick Note)$
-windowrulev2 = size 450 400, class:^(com.notnative.app)$, title:^(Quick Note)$
-windowrulev2 = move 100%-470 50, class:^(com.notnative.app)$, title:^(Quick Note)$
+windowrulev2 = float, class:^(notnative-app)$, title:^(Quick Note)$
+windowrulev2 = pin, class:^(notnative-app)$, title:^(Quick Note)$
+windowrulev2 = size 450 400, class:^(notnative-app)$, title:^(Quick Note)$
+windowrulev2 = center, class:^(notnative-app)$, title:^(Quick Note)$
 ```
 
-**Para i3/Sway**:
+**Para i3** (`~/.config/i3/config`) **/ Sway** (`~/.config/sway/config`):
 ```conf
 for_window [title="Quick Note"] floating enable, sticky enable
 ```

@@ -463,6 +463,7 @@ impl I18n {
 
         // Chat AI - Modo Agente
         translations.insert("chat_mode_agent", ("Modo: Agente", "Mode: Agent"));
+        translations.insert("chat_mode_normal", ("Modo: Normal", "Mode: Normal"));
         translations.insert("chat_new_session", ("Nueva sesión", "New Session"));
         translations.insert("chat_mode_chat", ("Modo: Chat", "Mode: Chat"));
         translations.insert(
@@ -733,7 +734,7 @@ impl I18n {
         );
 
         // === QUICK NOTES ===
-        translations.insert("quick_notes_title", ("Quick Notes", "Quick Notes"));
+        translations.insert("quick_notes_title", ("Quick Note", "Quick Note"));
         translations.insert(
             "quick_note_back_to_list",
             ("Volver a la lista", "Back to list"),
@@ -1037,6 +1038,167 @@ impl I18n {
         translations.insert(
             "analyzing_task",
             ("Analizando tarea...", "Analyzing task..."),
+        );
+
+        // === MCP SERVER DIALOG ===
+        translations.insert(
+            "mcp_server_title",
+            (
+                "MCP Server - Model Context Protocol",
+                "MCP Server - Model Context Protocol",
+            ),
+        );
+        translations.insert(
+            "mcp_server_active",
+            ("MCP Server Activo", "MCP Server Active"),
+        );
+        translations.insert(
+            "mcp_server_subtitle",
+            (
+                "Exponiendo herramientas de NotNative via HTTP",
+                "Exposing NotNative tools via HTTP",
+            ),
+        );
+        translations.insert("mcp_status", ("Estado", "Status"));
+        translations.insert(
+            "mcp_endpoints_available",
+            ("Endpoints disponibles", "Available endpoints"),
+        );
+
+        // === KEYBOARD SHORTCUTS SECTIONS ===
+        translations.insert("shortcuts_global", ("🌍 Globales", "🌍 Global"));
+        translations.insert(
+            "shortcuts_quick_notes",
+            ("📝 Quick Notes", "📝 Quick Notes"),
+        );
+        translations.insert(
+            "shortcuts_normal_navigation",
+            ("📝 Modo Normal - Navegación", "📝 Normal Mode - Navigation"),
+        );
+        translations.insert(
+            "shortcuts_normal_editing",
+            (
+                "📝 Modo Normal - Edición y Modos",
+                "📝 Normal Mode - Editing and Modes",
+            ),
+        );
+        translations.insert(
+            "shortcuts_insert_mode",
+            ("✍️ Modo Insertar", "✍️ Insert Mode"),
+        );
+        translations.insert("shortcuts_ai_chat", ("🤖 Modo Chat AI", "🤖 AI Chat Mode"));
+        translations.insert(
+            "shortcuts_sidebar",
+            ("📂 Sidebar y Listas", "📂 Sidebar and Lists"),
+        );
+        translations.insert(
+            "shortcuts_floating_search",
+            ("🔍 Búsqueda Flotante", "🔍 Floating Search"),
+        );
+
+        // === KEYBOARD SHORTCUTS DESCRIPTIONS ===
+        translations.insert(
+            "shortcut_global_search",
+            (
+                "Abrir búsqueda global flotante",
+                "Open floating global search",
+            ),
+        );
+        translations.insert(
+            "shortcut_note_search",
+            (
+                "Abrir búsqueda dentro de la nota actual",
+                "Open search within current note",
+            ),
+        );
+        translations.insert(
+            "shortcut_enter_ai_chat",
+            ("Entrar al modo Chat AI", "Enter AI Chat mode"),
+        );
+        translations.insert(
+            "shortcut_back_or_close",
+            (
+                "Volver a lista / Cerrar ventana",
+                "Back to list / Close window",
+            ),
+        );
+        translations.insert(
+            "shortcut_left",
+            ("Mover cursor a la izquierda", "Move cursor left"),
+        );
+        translations.insert("shortcut_down", ("Mover cursor abajo", "Move cursor down"));
+        translations.insert("shortcut_up", ("Mover cursor arriba", "Move cursor up"));
+        translations.insert(
+            "shortcut_right",
+            ("Mover cursor a la derecha", "Move cursor right"),
+        );
+        translations.insert(
+            "shortcut_ai_chat_mode",
+            ("Entrar en Modo Chat AI", "Enter AI Chat Mode"),
+        );
+        translations.insert("shortcut_new_note", ("Crear nueva nota", "Create new note"));
+        translations.insert(
+            "shortcut_insert_table",
+            ("Insertar tabla Markdown", "Insert Markdown table"),
+        );
+        translations.insert("shortcut_insert_image", ("Insertar imagen", "Insert image"));
+        translations.insert(
+            "shortcut_tab_autocomplete",
+            (
+                "Tabulación / Autocompletar Tag o @",
+                "Tab / Autocomplete Tag or @",
+            ),
+        );
+        translations.insert(
+            "shortcut_exit_chat",
+            (
+                "Salir del Chat (volver a Modo Normal)",
+                "Exit Chat (back to Normal Mode)",
+            ),
+        );
+        translations.insert(
+            "shortcut_exit_chat_insert",
+            (
+                "Salir del Chat y entrar a Modo Insertar",
+                "Exit Chat and enter Insert Mode",
+            ),
+        );
+        translations.insert("shortcut_send_message", ("Enviar mensaje", "Send message"));
+        translations.insert(
+            "shortcut_navigate_suggestions",
+            ("Navegar sugerencias", "Navigate suggestions"),
+        );
+        translations.insert(
+            "shortcut_accept_suggestion",
+            ("Aceptar sugerencia", "Accept suggestion"),
+        );
+        translations.insert("shortcut_next_note", ("Siguiente nota", "Next note"));
+        translations.insert("shortcut_prev_note", ("Nota anterior", "Previous note"));
+        translations.insert(
+            "shortcut_open_note",
+            (
+                "Abrir nota o carpeta seleccionada",
+                "Open selected note or folder",
+            ),
+        );
+        translations.insert(
+            "shortcut_focus_editor",
+            ("Devolver foco al editor", "Return focus to editor"),
+        );
+        translations.insert(
+            "shortcut_toggle_semantic",
+            (
+                "Alternar búsqueda semántica (AI)",
+                "Toggle semantic search (AI)",
+            ),
+        );
+        translations.insert(
+            "shortcut_navigate_results",
+            ("Navegar resultados", "Navigate results"),
+        );
+        translations.insert(
+            "shortcut_open_selected",
+            ("Abrir nota seleccionada", "Open selected note"),
         );
 
         Self {
