@@ -1669,6 +1669,96 @@ window.aboutdialog label {
   background-color: alpha(@selected-text, 0.05);
 }
 
+/* Estilos para iconos emoji personalizados en sidebar */
+.folder-emoji-icon,
+.note-emoji-icon {
+  font-size: 0.95em;
+  min-width: 16px;
+  margin-right: 4px;
+}
+
+/* Estilos para el diálogo de selección de iconos */
+.icon-picker-dialog {
+  background-color: @base;
+}
+
+.icon-picker-btn {
+  font-size: 1.2em;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  transition: all 150ms ease;
+}
+
+.icon-picker-btn:hover {
+  background-color: alpha(@selected-text, 0.15);
+  border-color: alpha(@border, 0.3);
+}
+
+.icon-picker-btn:active {
+  background-color: alpha(@selected-text, 0.25);
+}
+
+/* Botones de selección de color */
+.color-picker-btn {
+  border: 2px solid transparent;
+  transition: all 150ms ease;
+}
+
+.color-picker-btn:hover {
+  opacity: 0.85;
+  border-color: alpha(@text, 0.3);
+}
+
+.color-btn-selected {
+  border: 2px solid @text !important;
+  box-shadow: 0 0 0 2px alpha(@text, 0.2);
+}
+
+/* Estilos para el selector de iconos (popover legacy) */
+.icon-picker-popover {
+  background-color: @base;
+  border: 1px solid @border;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.icon-picker-popover flowbox {
+  background-color: transparent;
+}
+
+.icon-picker-popover flowboxchild {
+  padding: 0;
+  margin: 0;
+}
+
+.icon-picker-popover flowboxchild button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px;
+  margin: 1px;
+  font-size: 1.1em;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-color: transparent;
+}
+
+.icon-picker-popover flowboxchild button:hover {
+  background-color: alpha(@selected-text, 0.15);
+  border-color: alpha(@border, 0.3);
+}
+
+.icon-picker-popover flowboxchild button:active {
+  background-color: alpha(@selected-text, 0.25);
+}
+
+.icon-picker-title {
+  font-weight: bold;
+  font-size: 0.95em;
+  padding: 4px 0 8px 0;
+  color: @text;
+}
+
 .quick-note-icon {
   font-size: 1.4em;
 }

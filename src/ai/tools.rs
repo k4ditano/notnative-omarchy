@@ -123,7 +123,7 @@ impl<M: EmbeddingModel + Sync + Send + 'static> Tool for SemanticSearch<M> {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let results = self
             .memory
-            .search(&args.query, 5)
+            .search(&args.query, 10) // Aumentar el límite para tener más candidatos antes de de-duplicar
             .await
             .map_err(|e| ToolError(e.to_string()))?;
 
@@ -131,19 +131,51 @@ impl<M: EmbeddingModel + Sync + Send + 'static> Tool for SemanticSearch<M> {
             return Ok("No semantically similar notes found.".to_string());
         }
 
-        let mut output = String::new();
+        // De-duplicar resultados por nombre de nota (sin el #chunk_number)
+        // y quedarnos con el mejor score de cada nota
+        let mut seen_notes: std::collections::HashMap<String, (f32, String)> =
+            std::collections::HashMap::new();
+
         for (score, id, _metadata, content) in results {
-            // Limpiar saltos de línea excesivos para el snippet
-            let clean_content = content.replace('\n', " ");
-            let snippet = if clean_content.len() > 300 {
-                format!("{}...", &clean_content[..300])
+            // Extraer nombre de nota sin el sufijo #número
+            let note_name = if let Some(pos) = id.rfind('#') {
+                // Verificar que lo que está después del # es un número
+                if id[pos + 1..].parse::<usize>().is_ok() {
+                    id[..pos].to_string()
+                } else {
+                    id.clone()
+                }
             } else {
-                clean_content
+                id.clone()
             };
 
+            // Solo guardar si es el primer resultado de esta nota (mejor score)
+            seen_notes.entry(note_name).or_insert_with(|| {
+                // Limpiar saltos de línea excesivos para el snippet
+                let clean_content = content.replace('\n', " ");
+                let snippet = if clean_content.len() > 300 {
+                    format!("{}...", &clean_content[..300])
+                } else {
+                    clean_content
+                };
+                (score, snippet)
+            });
+        }
+
+        // Convertir a vector y ordenar por score (mayor a menor)
+        let mut unique_results: Vec<_> = seen_notes.into_iter().collect();
+        unique_results.sort_by(|a, b| {
+            b.1.0
+                .partial_cmp(&a.1.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Limitar a 5 resultados únicos
+        let mut output = String::new();
+        for (note_name, (score, snippet)) in unique_results.into_iter().take(5) {
             output.push_str(&format!(
                 "- Note: {}\n  Score: {:.2}\n  Snippet: {}\n\n",
-                id, score, snippet
+                note_name, score, snippet
             ));
         }
         Ok(output)

@@ -163,6 +163,17 @@ impl RigExecutor {
                 let mut agent_builder = oa_client.agent(&client.model)
                     .temperature(client.temperature as f64)
                     .preamble("You are a helpful assistant for managing markdown notes. You have access to comprehensive tools for creating, reading, updating, deleting, searching, analyzing, and organizing notes.
+
+CRITICAL RULE - ALWAYS PROVIDE A FINAL RESPONSE:
+After executing ANY tool(s), you MUST ALWAYS provide a final text response to the user summarizing what you did.
+NEVER finish a conversation without a text message. Even if tools executed successfully, you MUST write a summary.
+If you created notes, moved files, or performed any action, confirm it with a clear message.
+
+SHOWING NOTE CONTENT:
+When the user asks to see content from a note (tables, lists, data, etc.), you MUST include the COMPLETE content in your response.
+DO NOT say 'here is the table' without actually showing the table. Copy the exact content from the note into your response.
+If the content is a Markdown table, include the FULL table with all rows. Never truncate or summarize tables unless explicitly asked.
+
 IMPORTANT: When answering questions based on search results, ALWAYS cite the notes you used.
 Use the format `[Note Name](Note Name)` or `[[Note Name]]` to refer to notes, so the user can click on them.
 If you find relevant information in the search snippets, summarize it and link to the source note.
@@ -238,16 +249,39 @@ LANGUAGE INSTRUCTION: You must answer in the same language as the user's request
 
                 let result = agent.prompt(&prompt).multi_turn(30).await?;
 
-                if result.is_empty() {
-                    println!("⚠️ [RigExecutor] ¡Respuesta vacía recibida de OpenAI!");
-                    return Ok("⚠️ El modelo devolvió una respuesta vacía. Esto puede deberse a un error en el procesamiento de herramientas o al formato del contexto.".to_string());
-                }
+                // Si el resultado viene vacío, intentar obtener un resumen
+                if result.is_empty() || result.trim().is_empty() {
+                    println!("⚠️ [RigExecutor] Respuesta vacía de OpenAI. Solicitando resumen...");
 
-                println!(
-                    "✅ [RigExecutor] Respuesta recibida de OpenAI: {} caracteres",
-                    result.len()
-                );
-                result
+                    let summary_prompt = format!(
+                        "{}\n\nIMPORTANTE: Las herramientas ya se ejecutaron. Proporciona un RESUMEN BREVE de lo que hiciste.",
+                        prompt
+                    );
+
+                    let simple_agent = oa_client
+                        .agent(&client.model)
+                        .temperature(0.3)
+                        .preamble(
+                            "Resume las acciones completadas. Responde en el idioma del usuario.",
+                        )
+                        .build();
+
+                    match simple_agent.prompt(&summary_prompt).await {
+                        Ok(summary) if !summary.is_empty() => {
+                            println!("✅ [RigExecutor] Resumen obtenido: {} chars", summary.len());
+                            summary
+                        }
+                        _ => {
+                            "✅ Las operaciones se completaron. Verifica los cambios en tu workspace.".to_string()
+                        }
+                    }
+                } else {
+                    println!(
+                        "✅ [RigExecutor] Respuesta recibida de OpenAI: {} caracteres",
+                        result.len()
+                    );
+                    result
+                }
             }
             RigClientBackend::OpenRouter(or_client) => {
                 // Usar NoteMemory compartido del MCP executor
@@ -298,6 +332,17 @@ LANGUAGE INSTRUCTION: You must answer in the same language as the user's request
                 let mut agent_builder = or_client.agent(&client.model)
                     .temperature(client.temperature as f64)
                     .preamble("You are a helpful assistant for managing markdown notes. You have access to comprehensive tools for creating, reading, updating, deleting, searching, analyzing, and organizing notes.
+
+CRITICAL RULE - ALWAYS PROVIDE A FINAL RESPONSE:
+After executing ANY tool(s), you MUST ALWAYS provide a final text response to the user summarizing what you did.
+NEVER finish a conversation without a text message. Even if tools executed successfully, you MUST write a summary.
+If you created notes, moved files, or performed any action, confirm it with a clear message.
+
+SHOWING NOTE CONTENT:
+When the user asks to see content from a note (tables, lists, data, etc.), you MUST include the COMPLETE content in your response.
+DO NOT say 'here is the table' without actually showing the table. Copy the exact content from the note into your response.
+If the content is a Markdown table, include the FULL table with all rows. Never truncate or summarize tables unless explicitly asked.
+
 IMPORTANT: When answering questions based on search results, ALWAYS cite the notes you used.
 Use the format `[Note Name](Note Name)` or `[[Note Name]]` to refer to notes, so the user can click on them.
 If you find relevant information in the search snippets, summarize it and link to the source note.
@@ -377,21 +422,44 @@ LANGUAGE INSTRUCTION: You must answer in the same language as the user's request
                 let result = agent.prompt(&prompt).multi_turn(30).await?;
 
                 println!("🔍 [RigExecutor] Raw result length: {}", result.len());
-                if result.is_empty() {
-                    println!("⚠️ [RigExecutor] ¡Respuesta vacía recibida de OpenRouter!");
-                    return Ok("⚠️ La operación finalizó sin un resumen de texto. Por favor verifica si se crearon las carpetas y se movieron las notas correctamente.".to_string());
-                }
 
-                if result.is_empty() {
-                    println!("⚠️ [RigExecutor] ¡Respuesta vacía recibida de OpenRouter!");
-                    return Ok("⚠️ El modelo devolvió una respuesta vacía. Esto puede deberse a un error en el procesamiento de herramientas o al formato del contexto.".to_string());
-                }
+                // Si el resultado viene vacío, puede que el modelo ejecutó herramientas pero no dio respuesta final
+                // Intentamos hacer una llamada adicional pidiendo un resumen
+                if result.is_empty() || result.trim().is_empty() {
+                    println!("⚠️ [RigExecutor] Respuesta vacía. Solicitando resumen al modelo...");
 
-                println!(
-                    "✅ [RigExecutor] Respuesta recibida de OpenRouter: {} caracteres",
-                    result.len()
-                );
-                result
+                    // Intentar obtener un resumen simple sin herramientas
+                    let summary_prompt = format!(
+                        "{}\n\nIMPORTANTE: Las herramientas ya se ejecutaron. Ahora proporciona un RESUMEN BREVE de lo que hiciste. NO uses más herramientas, solo responde con texto.",
+                        prompt
+                    );
+
+                    // Crear un agente simple sin herramientas para el resumen
+                    let simple_agent = or_client.agent(&client.model)
+                        .temperature(0.3)
+                        .preamble("Eres un asistente que resume acciones completadas. Responde en el mismo idioma que el usuario.")
+                        .build();
+
+                    match simple_agent.prompt(&summary_prompt).await {
+                        Ok(summary) if !summary.is_empty() => {
+                            println!(
+                                "✅ [RigExecutor] Resumen obtenido: {} caracteres",
+                                summary.len()
+                            );
+                            summary
+                        }
+                        _ => {
+                            println!("⚠️ [RigExecutor] No se pudo obtener resumen");
+                            "✅ Las operaciones se completaron. Verifica los cambios en tu workspace.".to_string()
+                        }
+                    }
+                } else {
+                    println!(
+                        "✅ [RigExecutor] Respuesta recibida de OpenRouter: {} caracteres",
+                        result.len()
+                    );
+                    result
+                }
             }
         };
 

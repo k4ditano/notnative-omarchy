@@ -274,6 +274,7 @@ pub enum AppMsg {
     RefreshTheme, // Nuevo: actualizar cuando el tema del sistema cambia
     Toggle8BitMode,
     ToggleSidebar,
+    CloseSidebar,              // Cerrar sidebar si está abierto
     CloseSidebarAndOpenSearch, // Cerrar sidebar si está abierto y abrir búsqueda flotante
     OpenSidebarAndFocus,
     ShowCreateNoteDialog,
@@ -477,6 +478,22 @@ pub enum AppMsg {
         results: Vec<SearchResult>,
     }, // Realizar búsqueda semántica con IA
     ShowSemanticSearchAnswer(String), // Mostrar respuesta del agente de IA
+
+    // === Mensajes de Iconos Personalizados ===
+    ShowIconPicker {
+        name: String,
+        is_folder: bool,
+    }, // Mostrar selector de iconos
+    SetNoteIcon {
+        note_name: String,
+        icon: Option<String>,
+        color: Option<String>,
+    }, // Establecer icono de nota
+    SetFolderIcon {
+        folder_path: String,
+        icon: Option<String>,
+        color: Option<String>,
+    }, // Establecer icono de carpeta
 }
 
 #[component(pub)]
@@ -2945,10 +2962,28 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
             }
         ));
 
+        // Acción para cambiar icono
+        let change_icon_action = gtk::gio::SimpleAction::new("change_icon", None);
+        change_icon_action.connect_activate(gtk::glib::clone!(
+            #[strong]
+            sender,
+            #[strong(rename_to = item_name)]
+            model.context_item_name,
+            #[strong(rename_to = is_folder)]
+            model.context_is_folder,
+            move |_, _| {
+                sender.input(AppMsg::ShowIconPicker {
+                    name: item_name.borrow().clone(),
+                    is_folder: *is_folder.borrow(),
+                });
+            }
+        ));
+
         let action_group = gtk::gio::SimpleActionGroup::new();
         action_group.add_action(&rename_action);
         action_group.add_action(&delete_action);
         action_group.add_action(&open_folder_action);
+        action_group.add_action(&change_icon_action);
         context_menu.insert_action_group("item", Some(&action_group));
 
         // Crear tags de estilo para markdown
@@ -3404,6 +3439,22 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
             }
         ));
         text_view_actual.add_controller(click_controller);
+
+        // Controller para cerrar sidebar cuando se hace click en el área del editor
+        // Lo ponemos en el editor_stack para capturar clicks tanto en modo Normal (WebView) como Insert (TextView)
+        let editor_stack_for_click = model.editor_stack.clone();
+        let sidebar_click_controller = gtk::GestureClick::new();
+        sidebar_click_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        sidebar_click_controller.connect_pressed(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move |gesture, _n_press, _x, _y| {
+                sender.input(AppMsg::CloseSidebar);
+                // No consumir el evento para que los widgets hijos lo reciban también
+                gesture.set_state(gtk::EventSequenceState::None);
+            }
+        ));
+        editor_stack_for_click.add_controller(sidebar_click_controller);
 
         // Agregar controlador de movimiento del mouse para cambiar cursor sobre links y tags
         let motion_controller = gtk::EventControllerMotion::new();
@@ -4665,6 +4716,15 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                 }
             }
 
+            AppMsg::CloseSidebar => {
+                // Cerrar sidebar si está abierto (en modo Normal o Insert)
+                let mode = *self.mode.borrow();
+                if mode != EditorMode::ChatAI && self.sidebar_visible {
+                    self.sidebar_visible = false;
+                    self.animate_sidebar(0);
+                }
+            }
+
             AppMsg::CloseSidebarAndOpenSearch => {
                 // Cerrar sidebar si está abierto (en modo Normal)
                 let mode = *self.mode.borrow();
@@ -5322,6 +5382,7 @@ Puedes abrir una ventana flotante de notas rápidas desde **cualquier aplicació
                     Some(&i18n.t("open_in_file_manager")),
                     Some("item.open_folder"),
                 );
+                menu.append(Some(&i18n.t("change_icon")), Some("item.change_icon"));
                 menu.append(Some(&i18n.t("rename")), Some("item.rename"));
                 menu.append(Some(&i18n.t("delete")), Some("item.delete"));
                 self.context_menu.set_menu_model(Some(&menu));
@@ -9293,6 +9354,63 @@ Para ello debes usar la herramienta semantic_search para encontrar las notas ade
                     revealer.set_reveal_child(false);
                 });
             }
+
+            AppMsg::ShowIconPicker { name, is_folder } => {
+                // Mostrar popover con selector de iconos
+                self.show_icon_picker_popover(&name, is_folder, &sender);
+            }
+
+            AppMsg::SetNoteIcon {
+                note_name,
+                icon,
+                color,
+            } => {
+                // Establecer icono de nota en la BD
+                if let Err(e) = self.notes_db.set_note_icon(&note_name, icon.as_deref()) {
+                    eprintln!("Error estableciendo icono de nota: {}", e);
+                } else {
+                    // Si hay color, establecerlo también
+                    if let Some(ref c) = color {
+                        let _ = self
+                            .notes_db
+                            .set_note_icon_color(&note_name, Some(c.as_str()));
+                    } else if icon.is_none() {
+                        // Si se quita el icono, también quitar el color
+                        let _ = self.notes_db.set_note_icon_color(&note_name, None);
+                    }
+                    println!(
+                        "✅ Icono de nota '{}' actualizado a: {:?} (color: {:?})",
+                        note_name, icon, color
+                    );
+                    sender.input(AppMsg::RefreshSidebar);
+                }
+            }
+
+            AppMsg::SetFolderIcon {
+                folder_path,
+                icon,
+                color,
+            } => {
+                // Establecer icono de carpeta en la BD
+                if let Err(e) = self.notes_db.set_folder_icon(&folder_path, icon.as_deref()) {
+                    eprintln!("Error estableciendo icono de carpeta: {}", e);
+                } else {
+                    // Si hay color, establecerlo también
+                    if let Some(ref c) = color {
+                        let _ = self
+                            .notes_db
+                            .set_folder_icon_color(&folder_path, Some(c.as_str()));
+                    } else if icon.is_none() {
+                        // Si se quita el icono, también quitar el color
+                        let _ = self.notes_db.set_folder_icon_color(&folder_path, None);
+                    }
+                    println!(
+                        "✅ Icono de carpeta '{}' actualizado a: {:?} (color: {:?})",
+                        folder_path, icon, color
+                    );
+                    sender.input(AppMsg::RefreshSidebar);
+                }
+            }
         }
     }
 }
@@ -9842,6 +9960,12 @@ impl MainApp {
                             self.text_view.set_editable(true);
                             self.text_view.set_cursor_visible(true);
                             self.text_view.grab_focus();
+
+                            // Cerrar sidebar automáticamente al entrar en modo Insert
+                            if self.sidebar_visible {
+                                self.sidebar_visible = false;
+                                self.animate_sidebar(0);
+                            }
                         }
                         _ => {}
                     }
@@ -14331,6 +14455,16 @@ impl MainApp {
             // Organizar por carpetas manteniendo el orden de order_index
             let mut by_folder: HashMap<String, Vec<String>> = HashMap::new();
 
+            // Pre-cargar iconos personalizados con colores para carpetas y notas
+            let folder_icons = self
+                .notes_db
+                .get_all_folder_icons_with_colors()
+                .unwrap_or_default();
+            let note_icons = self
+                .notes_db
+                .get_all_note_icons_with_colors()
+                .unwrap_or_default();
+
             for note_meta in existing_notes {
                 let folder = note_meta.folder.as_deref().unwrap_or("/").to_string();
                 by_folder
@@ -14485,16 +14619,65 @@ impl MainApp {
                             .pixel_size(12)
                             .build();
 
-                        let icon_name = if folder == ".trash" {
-                            "user-trash-symbolic"
-                        } else {
-                            "folder-symbolic"
-                        };
+                        // Verificar si hay un icono personalizado para esta carpeta
+                        let custom_folder_icon = folder_icons.get(&folder);
 
-                        let folder_icon = gtk::Image::builder()
-                            .icon_name(icon_name)
-                            .pixel_size(16)
-                            .build();
+                        // Crear el widget de icono (icono del sistema o emoji)
+                        let folder_icon_widget: gtk::Widget = if let Some((icon, color)) =
+                            custom_folder_icon
+                        {
+                            // Verificar si es un icono del sistema (termina en -symbolic)
+                            if icon.ends_with("-symbolic") {
+                                let image =
+                                    gtk::Image::builder().icon_name(icon).pixel_size(16).build();
+                                image.add_css_class("folder-custom-icon");
+
+                                // Aplicar color si está definido
+                                if let Some(hex_color) = color {
+                                    let css_provider = gtk::CssProvider::new();
+                                    let css = format!(
+                                        "image {{ color: {}; -gtk-icon-style: symbolic; }}",
+                                        hex_color
+                                    );
+                                    css_provider.load_from_data(&css);
+                                    image.style_context().add_provider(
+                                        &css_provider,
+                                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                                    );
+                                }
+
+                                image.upcast()
+                            } else {
+                                // Es un emoji/caracter Unicode
+                                let label = gtk::Label::builder().label(icon).build();
+                                label.add_css_class("folder-emoji-icon");
+
+                                // Aplicar color si está definido
+                                if let Some(hex_color) = color {
+                                    let css_provider = gtk::CssProvider::new();
+                                    let css = format!("label {{ color: {}; }}", hex_color);
+                                    css_provider.load_from_data(&css);
+                                    label.style_context().add_provider(
+                                        &css_provider,
+                                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                                    );
+                                }
+
+                                label.upcast()
+                            }
+                        } else {
+                            // Usar icono del sistema por defecto
+                            let icon_name = if folder == ".trash" {
+                                "user-trash-symbolic"
+                            } else {
+                                "folder-symbolic"
+                            };
+                            gtk::Image::builder()
+                                .icon_name(icon_name)
+                                .pixel_size(16)
+                                .build()
+                                .upcast()
+                        };
 
                         // Obtener solo el nombre de la carpeta (última parte del path)
                         let folder_display_name = if folder == ".trash" {
@@ -14510,7 +14693,7 @@ impl MainApp {
                         folder_row.set_margin_start(indent as i32);
 
                         folder_row.append(&arrow);
-                        folder_row.append(&folder_icon);
+                        folder_row.append(&folder_icon_widget);
 
                         // Verificar si esta carpeta está siendo renombrada
                         let is_renaming_folder = self
@@ -14659,12 +14842,62 @@ impl MainApp {
                             .margin_bottom(3)
                             .build();
 
-                        let icon = gtk::Image::builder()
-                            .icon_name("text-x-generic-symbolic")
-                            .pixel_size(14)
-                            .build();
+                        // Verificar si hay un icono personalizado para esta nota
+                        let custom_note_icon = note_icons.get(note_name);
 
-                        row.append(&icon);
+                        // Crear el widget de icono (icono del sistema o emoji)
+                        let note_icon_widget: gtk::Widget = if let Some((icon, color)) =
+                            custom_note_icon
+                        {
+                            // Verificar si es un icono del sistema (termina en -symbolic)
+                            if icon.ends_with("-symbolic") {
+                                let image =
+                                    gtk::Image::builder().icon_name(icon).pixel_size(14).build();
+                                image.add_css_class("note-custom-icon");
+
+                                // Aplicar color si está definido
+                                if let Some(hex_color) = color {
+                                    let css_provider = gtk::CssProvider::new();
+                                    let css = format!(
+                                        "image {{ color: {}; -gtk-icon-style: symbolic; }}",
+                                        hex_color
+                                    );
+                                    css_provider.load_from_data(&css);
+                                    image.style_context().add_provider(
+                                        &css_provider,
+                                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                                    );
+                                }
+
+                                image.upcast()
+                            } else {
+                                // Es un emoji/caracter Unicode
+                                let label = gtk::Label::builder().label(icon).build();
+                                label.add_css_class("note-emoji-icon");
+
+                                // Aplicar color si está definido
+                                if let Some(hex_color) = color {
+                                    let css_provider = gtk::CssProvider::new();
+                                    let css = format!("label {{ color: {}; }}", hex_color);
+                                    css_provider.load_from_data(&css);
+                                    label.style_context().add_provider(
+                                        &css_provider,
+                                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                                    );
+                                }
+
+                                label.upcast()
+                            }
+                        } else {
+                            // Usar icono del sistema por defecto
+                            gtk::Image::builder()
+                                .icon_name("text-x-generic-symbolic")
+                                .pixel_size(14)
+                                .build()
+                                .upcast()
+                        };
+
+                        row.append(&note_icon_widget);
 
                         // Clonar note_name para uso posterior
                         let note_name_str = note_name.as_str();
@@ -18215,7 +18448,7 @@ impl MainApp {
             .transient_for(&self.main_window)
             .modal(true)
             .program_name("NotNative")
-            .version("0.1.2")
+            .version("0.1.13")
             .comments(&i18n.t("app_description"))
             .website("https://github.com/k4ditano/notnative-app")
             .website_label(&i18n.t("website"))
@@ -18636,6 +18869,388 @@ impl MainApp {
     fn recreate_settings_popover(&self, sender: &ComponentSender<Self>) {
         // Recrear el popover con los textos actualizados
         self.create_settings_popover(sender);
+    }
+
+    /// Muestra un popover para seleccionar iconos/emojis personalizados
+    fn show_icon_picker_popover(
+        &self,
+        name: &str,
+        is_folder: bool,
+        sender: &ComponentSender<Self>,
+    ) {
+        println!(
+            "🎨 Mostrando icon picker para: {} (is_folder: {})",
+            name, is_folder
+        );
+
+        // Cerrar el context menu primero
+        self.context_menu.popdown();
+
+        // Iconos del sistema GTK (simbólicos) - uniformes y escalables
+        // Estos iconos vienen con Adwaita/GTK y son monocromáticos
+        let system_icons: &[(&str, &str)] = &[
+            // Documentos y notas
+            ("text-x-generic-symbolic", "Documento"),
+            ("document-new-symbolic", "Nuevo"),
+            ("document-edit-symbolic", "Editar"),
+            ("document-save-symbolic", "Guardado"),
+            ("document-properties-symbolic", "Propiedades"),
+            ("x-office-document-symbolic", "Ofimática"),
+            ("x-office-spreadsheet-symbolic", "Hoja cálculo"),
+            ("x-office-presentation-symbolic", "Presentación"),
+            // Carpetas y organización
+            ("folder-symbolic", "Carpeta"),
+            ("folder-documents-symbolic", "Documentos"),
+            ("folder-download-symbolic", "Descargas"),
+            ("folder-music-symbolic", "Música"),
+            ("folder-pictures-symbolic", "Imágenes"),
+            ("folder-videos-symbolic", "Vídeos"),
+            ("folder-templates-symbolic", "Plantillas"),
+            ("folder-saved-search-symbolic", "Búsqueda"),
+            // Favoritos y marcadores
+            ("starred-symbolic", "Favorito"),
+            ("non-starred-symbolic", "No favorito"),
+            ("bookmark-new-symbolic", "Marcador"),
+            ("user-bookmarks-symbolic", "Marcadores"),
+            ("emblem-favorite-symbolic", "Corazón"),
+            ("emblem-important-symbolic", "Importante"),
+            // Estado y alertas
+            ("emblem-ok-symbolic", "OK"),
+            ("emblem-default-symbolic", "Defecto"),
+            ("dialog-warning-symbolic", "Advertencia"),
+            ("dialog-error-symbolic", "Error"),
+            ("dialog-information-symbolic", "Info"),
+            ("dialog-question-symbolic", "Pregunta"),
+            // Comunicación
+            ("mail-unread-symbolic", "Correo"),
+            ("mail-mark-important-symbolic", "Importante"),
+            ("chat-message-new-symbolic", "Chat"),
+            ("call-start-symbolic", "Llamada"),
+            // Multimedia
+            ("audio-x-generic-symbolic", "Audio"),
+            ("video-x-generic-symbolic", "Vídeo"),
+            ("image-x-generic-symbolic", "Imagen"),
+            ("camera-photo-symbolic", "Foto"),
+            ("media-playback-start-symbolic", "Play"),
+            // Herramientas y configuración
+            ("preferences-system-symbolic", "Sistema"),
+            ("applications-system-symbolic", "Apps"),
+            ("emblem-system-symbolic", "Engranaje"),
+            ("utilities-terminal-symbolic", "Terminal"),
+            ("accessories-text-editor-symbolic", "Editor"),
+            // Tiempo y calendario
+            ("alarm-symbolic", "Alarma"),
+            ("appointment-new-symbolic", "Cita"),
+            ("x-office-calendar-symbolic", "Calendario"),
+            // Web y red
+            ("network-server-symbolic", "Servidor"),
+            ("web-browser-symbolic", "Web"),
+            ("folder-remote-symbolic", "Remoto"),
+            // Seguridad
+            ("channel-secure-symbolic", "Seguro"),
+            ("changes-prevent-symbolic", "Bloqueado"),
+            ("system-lock-screen-symbolic", "Candado"),
+            // Navegación
+            ("go-home-symbolic", "Inicio"),
+            ("view-pin-symbolic", "Pin"),
+            ("find-location-symbolic", "Ubicación"),
+            ("mark-location-symbolic", "Marca"),
+            // Acciones
+            ("list-add-symbolic", "Añadir"),
+            ("edit-find-symbolic", "Buscar"),
+            ("view-list-symbolic", "Lista"),
+            ("view-grid-symbolic", "Cuadrícula"),
+            ("star-new-symbolic", "Nueva estrella"),
+            ("object-select-symbolic", "Seleccionar"),
+            // Misc
+            ("help-about-symbolic", "Acerca de"),
+            ("avatar-default-symbolic", "Usuario"),
+            ("weather-clear-symbolic", "Sol"),
+            ("weather-overcast-symbolic", "Nublado"),
+        ];
+
+        // Colores disponibles (hex)
+        let colors = [
+            ("#ff6b6b", "Rojo"),
+            ("#ff9f43", "Naranja"),
+            ("#feca57", "Amarillo"),
+            ("#48dbfb", "Cian"),
+            ("#1dd1a1", "Verde"),
+            ("#5f27cd", "Púrpura"),
+            ("#ff6b9d", "Rosa"),
+            ("#00d2d3", "Turquesa"),
+            ("#54a0ff", "Azul"),
+            ("#c8d6e5", "Gris"),
+        ];
+
+        // Crear ventana de diálogo
+        let dialog = gtk::Window::builder()
+            .title(if is_folder {
+                "Icono de carpeta"
+            } else {
+                "Icono de nota"
+            })
+            .modal(true)
+            .transient_for(&self.main_window)
+            .default_width(380)
+            .default_height(520)
+            .resizable(false)
+            .build();
+        dialog.add_css_class("icon-picker-dialog");
+
+        // Contenedor principal con scroll
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .build();
+
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_top(16)
+            .margin_bottom(16)
+            .margin_start(16)
+            .margin_end(16)
+            .build();
+
+        // Header con nombre del item
+        let header_label = gtk::Label::builder()
+            .label(name)
+            .halign(gtk::Align::Center)
+            .build();
+        header_label.add_css_class("title-4");
+        content_box.append(&header_label);
+
+        // Selector de color
+        let color_label = gtk::Label::builder()
+            .label("Color del icono")
+            .halign(gtk::Align::Start)
+            .build();
+        color_label.add_css_class("heading");
+        content_box.append(&color_label);
+
+        // Estado compartido para el color seleccionado
+        let selected_color: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+
+        let color_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .build();
+
+        // Botón para "sin color" (usa el color por defecto del tema)
+        let no_color_btn = gtk::Button::builder()
+            .label("○")
+            .tooltip_text("Sin color (tema)")
+            .width_request(32)
+            .height_request(32)
+            .build();
+        no_color_btn.add_css_class("flat");
+        no_color_btn.add_css_class("circular");
+        no_color_btn.add_css_class("color-btn-selected");
+
+        let selected_color_clone = selected_color.clone();
+        let color_box_weak = color_box.downgrade();
+        no_color_btn.connect_clicked(move |btn| {
+            *selected_color_clone.borrow_mut() = None;
+            // Actualizar apariencia de todos los botones
+            if let Some(cbox) = color_box_weak.upgrade() {
+                let mut child = cbox.first_child();
+                while let Some(widget) = child {
+                    widget.remove_css_class("color-btn-selected");
+                    child = widget.next_sibling();
+                }
+            }
+            btn.add_css_class("color-btn-selected");
+        });
+        color_box.append(&no_color_btn);
+
+        for (hex, tooltip) in colors {
+            let color_btn = gtk::Button::new();
+            color_btn.set_tooltip_text(Some(tooltip));
+            color_btn.set_width_request(32);
+            color_btn.set_height_request(32);
+            color_btn.add_css_class("flat");
+            color_btn.add_css_class("circular");
+            color_btn.add_css_class("color-picker-btn");
+
+            // Aplicar color de fondo usando CSS inline
+            let css_provider = gtk::CssProvider::new();
+            let css = format!(
+                "button {{ background-color: {}; min-width: 24px; min-height: 24px; }}
+                 button:hover {{ opacity: 0.8; }}",
+                hex
+            );
+            css_provider.load_from_data(&css);
+            color_btn
+                .style_context()
+                .add_provider(&css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+            let hex_owned = hex.to_string();
+            let selected_color_clone = selected_color.clone();
+            let color_box_weak = color_box.downgrade();
+
+            color_btn.connect_clicked(move |btn| {
+                *selected_color_clone.borrow_mut() = Some(hex_owned.clone());
+                // Actualizar apariencia de todos los botones
+                if let Some(cbox) = color_box_weak.upgrade() {
+                    let mut child = cbox.first_child();
+                    while let Some(widget) = child {
+                        widget.remove_css_class("color-btn-selected");
+                        child = widget.next_sibling();
+                    }
+                }
+                btn.add_css_class("color-btn-selected");
+            });
+
+            color_box.append(&color_btn);
+        }
+        content_box.append(&color_box);
+
+        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // Label para iconos
+        let icons_label = gtk::Label::builder()
+            .label("Selecciona un icono")
+            .halign(gtk::Align::Start)
+            .build();
+        icons_label.add_css_class("heading");
+        content_box.append(&icons_label);
+
+        // Grid de iconos (8 columnas)
+        let grid = gtk::Grid::builder()
+            .column_spacing(4)
+            .row_spacing(4)
+            .halign(gtk::Align::Center)
+            .build();
+
+        let name_owned = name.to_string();
+        let mut col = 0;
+        let mut row = 0;
+
+        for (icon_name, tooltip) in system_icons {
+            // Crear botón con imagen del sistema
+            let image = gtk::Image::builder()
+                .icon_name(*icon_name)
+                .pixel_size(20)
+                .build();
+
+            let button = gtk::Button::builder()
+                .child(&image)
+                .tooltip_text(*tooltip)
+                .width_request(36)
+                .height_request(36)
+                .build();
+            button.add_css_class("flat");
+            button.add_css_class("icon-picker-btn");
+
+            let icon_str = (*icon_name).to_string();
+            let name_clone = name_owned.clone();
+            let is_folder_clone = is_folder;
+            let sender_clone = sender.clone();
+            let dialog_weak = dialog.downgrade();
+            let selected_color_clone = selected_color.clone();
+
+            button.connect_clicked(move |_btn| {
+                let color = selected_color_clone.borrow().clone();
+
+                // Cerrar el diálogo
+                if let Some(dlg) = dialog_weak.upgrade() {
+                    dlg.close();
+                }
+
+                if is_folder_clone {
+                    sender_clone.input(AppMsg::SetFolderIcon {
+                        folder_path: name_clone.clone(),
+                        icon: Some(icon_str.clone()),
+                        color,
+                    });
+                } else {
+                    sender_clone.input(AppMsg::SetNoteIcon {
+                        note_name: name_clone.clone(),
+                        icon: Some(icon_str.clone()),
+                        color,
+                    });
+                }
+            });
+
+            grid.attach(&button, col, row, 1, 1);
+            col += 1;
+            if col >= 8 {
+                col = 0;
+                row += 1;
+            }
+        }
+
+        content_box.append(&grid);
+
+        scrolled.set_child(Some(&content_box));
+
+        // Contenedor exterior con botones fijos abajo
+        let outer_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .build();
+
+        outer_box.append(&scrolled);
+
+        // Separador
+        outer_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // Botones de acción (fijos abajo)
+        let button_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::End)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_end(16)
+            .build();
+
+        // Botón para quitar icono personalizado
+        let remove_button = gtk::Button::builder().label("Por defecto").build();
+        remove_button.add_css_class("flat");
+
+        let name_for_remove = name_owned.clone();
+        let sender_for_remove = sender.clone();
+        let dialog_weak_remove = dialog.downgrade();
+        remove_button.connect_clicked(move |_| {
+            if let Some(dlg) = dialog_weak_remove.upgrade() {
+                dlg.close();
+            }
+
+            if is_folder {
+                sender_for_remove.input(AppMsg::SetFolderIcon {
+                    folder_path: name_for_remove.clone(),
+                    icon: None,
+                    color: None,
+                });
+            } else {
+                sender_for_remove.input(AppMsg::SetNoteIcon {
+                    note_name: name_for_remove.clone(),
+                    icon: None,
+                    color: None,
+                });
+            }
+        });
+        button_box.append(&remove_button);
+
+        // Botón cancelar
+        let cancel_button = gtk::Button::builder().label("Cancelar").build();
+        let dialog_weak_cancel = dialog.downgrade();
+        cancel_button.connect_clicked(move |_| {
+            if let Some(dlg) = dialog_weak_cancel.upgrade() {
+                dlg.close();
+            }
+        });
+        button_box.append(&cancel_button);
+
+        outer_box.append(&button_box);
+
+        dialog.set_child(Some(&outer_box));
+        dialog.present();
     }
 
     fn update_context_menu_labels(&self) {

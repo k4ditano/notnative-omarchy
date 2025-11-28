@@ -106,6 +106,7 @@ impl I18n {
         translations.insert("cancel", ("Cancelar", "Cancel"));
         translations.insert("rename", ("Renombrar", "Rename"));
         translations.insert("delete", ("Eliminar", "Delete"));
+        translations.insert("change_icon", ("Cambiar icono", "Change icon"));
         translations.insert(
             "open_in_file_manager",
             ("Abrir en explorador", "Open in file manager"),

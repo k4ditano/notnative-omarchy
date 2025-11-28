@@ -28,6 +28,19 @@ pub struct NoteMetadata {
     pub path: String,
     pub folder: Option<String>,
     pub order_index: i32,
+    pub icon: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Metadata de una carpeta almacenada en la base de datos
+#[derive(Debug, Clone)]
+pub struct FolderMetadata {
+    pub id: i64,
+    pub path: String,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub order_index: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -97,7 +110,7 @@ impl std::fmt::Debug for NotesDatabase {
 
 impl NotesDatabase {
     /// Versión actual del esquema
-    const SCHEMA_VERSION: i32 = 5;
+    const SCHEMA_VERSION: i32 = 7;
 
     /// Crear o abrir base de datos en la ruta especificada
     pub fn new(path: &Path) -> Result<Self> {
@@ -116,11 +129,11 @@ impl NotesDatabase {
         // Primero crear tabla de versión si no existe
         db.ensure_version_table()?;
 
+        // Inicializar esquema completo (antes de migraciones para que existan las tablas base)
+        db.initialize_schema()?;
+
         // Verificar versión actual y migrar si es necesario
         db.migrate_if_needed()?;
-
-        // Inicializar esquema completo
-        db.initialize_schema()?;
 
         Ok(db)
     }
@@ -304,6 +317,16 @@ impl NotesDatabase {
             // Migración v4 -> v5: Recrear tabla FTS sin Porter (mejor búsqueda por prefijo)
             if current_version < 5 {
                 self.migrate_to_v5()?;
+            }
+
+            // Migración v5 -> v6: Agregar iconos a notas y tabla de carpetas
+            if current_version < 6 {
+                self.migrate_to_v6()?;
+            }
+
+            // Migración v6 -> v7: Agregar icon_color a notas y carpetas
+            if current_version < 7 {
+                self.migrate_to_v7()?;
             }
 
             println!(
@@ -510,6 +533,133 @@ impl NotesDatabase {
         Ok(())
     }
 
+    /// Migración a versión 6: Agregar iconos a notas y tabla de carpetas
+    fn migrate_to_v6(&mut self) -> Result<()> {
+        println!("Aplicando migración v6: Agregando soporte de iconos personalizados");
+
+        // Verificar si la tabla notes existe
+        let notes_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)?;
+
+        // 1. Agregar columna icon a la tabla notes (si existe y no tiene la columna)
+        if notes_exists {
+            let has_icon_column: bool = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name='icon'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)?;
+
+            if !has_icon_column {
+                self.conn
+                    .execute("ALTER TABLE notes ADD COLUMN icon TEXT", [])?;
+                println!("  📦 Columna 'icon' agregada a tabla notes");
+            }
+        }
+
+        // 2. Crear tabla de carpetas para iconos y metadatos
+        self.conn.execute_batch(
+            r#"
+            -- Tabla de carpetas con iconos personalizados
+            CREATE TABLE IF NOT EXISTS folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                icon TEXT,
+                color TEXT,
+                order_index INTEGER DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            -- Índices para carpetas
+            CREATE INDEX IF NOT EXISTS idx_folders_path ON folders(path);
+            CREATE INDEX IF NOT EXISTS idx_folders_order ON folders(order_index);
+            "#,
+        )?;
+        println!("  📁 Tabla 'folders' creada");
+
+        // Actualizar versión
+        self.conn
+            .execute("REPLACE INTO schema_version (version) VALUES (6)", [])?;
+
+        Ok(())
+    }
+
+    /// Migración a versión 7: Agregar icon_color a notas y carpetas
+    fn migrate_to_v7(&mut self) -> Result<()> {
+        println!("Aplicando migración v7: Agregando soporte de color para iconos");
+
+        // Verificar si la tabla notes existe
+        let notes_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)?;
+
+        // Verificar si la tabla folders existe
+        let folders_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='folders'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)?;
+
+        // 1. Agregar columna icon_color a la tabla notes (si existe y no tiene la columna)
+        if notes_exists {
+            let has_icon_color_in_notes: bool = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name='icon_color'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)?;
+
+            if !has_icon_color_in_notes {
+                self.conn
+                    .execute("ALTER TABLE notes ADD COLUMN icon_color TEXT", [])?;
+                println!("  🎨 Columna 'icon_color' agregada a tabla notes");
+            }
+        }
+
+        // 2. Agregar columna icon_color a la tabla folders (si existe y no tiene la columna)
+        if folders_exists {
+            let has_icon_color_in_folders: bool = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('folders') WHERE name='icon_color'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)?;
+
+            if !has_icon_color_in_folders {
+                self.conn
+                    .execute("ALTER TABLE folders ADD COLUMN icon_color TEXT", [])?;
+                println!("  🎨 Columna 'icon_color' agregada a tabla folders");
+            }
+        }
+
+        // Actualizar versión
+        self.conn
+            .execute("REPLACE INTO schema_version (version) VALUES (7)", [])?;
+
+        Ok(())
+    }
+
     /// Indexar una nota en la base de datos
     pub fn index_note(
         &self,
@@ -647,7 +797,7 @@ impl NotesDatabase {
             .conn
             .query_row(
                 r#"
-            SELECT id, name, path, folder, order_index, created_at, updated_at
+            SELECT id, name, path, folder, order_index, icon, created_at, updated_at
             FROM notes WHERE name = ?1
             "#,
                 params![name],
@@ -658,8 +808,9 @@ impl NotesDatabase {
                         path: row.get(2)?,
                         folder: row.get(3)?,
                         order_index: row.get(4)?,
-                        created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
-                        updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                        icon: row.get(5)?,
+                        created_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                        updated_at: DateTime::from_timestamp(row.get(7)?, 0).unwrap(),
                     })
                 },
             )
@@ -674,7 +825,7 @@ impl NotesDatabase {
             .conn
             .query_row(
                 r#"
-            SELECT id, name, path, folder, order_index, created_at, updated_at
+            SELECT id, name, path, folder, order_index, icon, created_at, updated_at
             FROM notes WHERE path = ?1
             "#,
                 params![path],
@@ -685,8 +836,9 @@ impl NotesDatabase {
                         path: row.get(2)?,
                         folder: row.get(3)?,
                         order_index: row.get(4)?,
-                        created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
-                        updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                        icon: row.get(5)?,
+                        created_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                        updated_at: DateTime::from_timestamp(row.get(7)?, 0).unwrap(),
                     })
                 },
             )
@@ -699,12 +851,12 @@ impl NotesDatabase {
     pub fn list_notes(&self, folder: Option<&str>) -> Result<Vec<NoteMetadata>> {
         let mut stmt = if folder.is_some() {
             self.conn.prepare(
-                "SELECT id, name, path, folder, order_index, created_at, updated_at
+                "SELECT id, name, path, folder, order_index, icon, created_at, updated_at
                  FROM notes WHERE folder = ?1 ORDER BY order_index, name",
             )?
         } else {
             self.conn.prepare(
-                "SELECT id, name, path, folder, order_index, created_at, updated_at
+                "SELECT id, name, path, folder, order_index, icon, created_at, updated_at
                  FROM notes ORDER BY order_index, name",
             )?
         };
@@ -726,8 +878,9 @@ impl NotesDatabase {
             path: row.get(2)?,
             folder: row.get(3)?,
             order_index: row.get(4)?,
-            created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
-            updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+            icon: row.get(5)?,
+            created_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+            updated_at: DateTime::from_timestamp(row.get(7)?, 0).unwrap(),
         })
     }
 
@@ -1709,6 +1862,246 @@ impl NotesDatabase {
         }
 
         Ok(())
+    }
+
+    // ==================== FUNCIONES DE ICONOS ====================
+
+    /// Establecer el icono personalizado de una nota
+    pub fn set_note_icon(&self, note_name: &str, icon: Option<&str>) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let rows = self.conn.execute(
+            "UPDATE notes SET icon = ?1, updated_at = ?2 WHERE name = ?3",
+            params![icon, now, note_name],
+        )?;
+
+        if rows == 0 {
+            return Err(DatabaseError::NoteNotFound(note_name.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Obtener el icono de una nota
+    pub fn get_note_icon(&self, note_name: &str) -> Result<Option<String>> {
+        let result = self
+            .conn
+            .query_row(
+                "SELECT icon FROM notes WHERE name = ?1",
+                params![note_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(result.flatten())
+    }
+
+    /// Establecer el icono personalizado de una carpeta
+    pub fn set_folder_icon(&self, folder_path: &str, icon: Option<&str>) -> Result<()> {
+        let now = Utc::now().timestamp();
+
+        // Usar UPSERT para crear o actualizar
+        self.conn.execute(
+            r#"
+            INSERT INTO folders (path, icon, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(path) DO UPDATE SET
+                icon = excluded.icon,
+                updated_at = excluded.updated_at
+            "#,
+            params![folder_path, icon, now, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// Establecer el color de una carpeta
+    pub fn set_folder_color(&self, folder_path: &str, color: Option<&str>) -> Result<()> {
+        let now = Utc::now().timestamp();
+
+        self.conn.execute(
+            r#"
+            INSERT INTO folders (path, color, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(path) DO UPDATE SET
+                color = excluded.color,
+                updated_at = excluded.updated_at
+            "#,
+            params![folder_path, color, now, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// Obtener el icono de una carpeta
+    pub fn get_folder_icon(&self, folder_path: &str) -> Result<Option<String>> {
+        let result = self
+            .conn
+            .query_row(
+                "SELECT icon FROM folders WHERE path = ?1",
+                params![folder_path],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(result.flatten())
+    }
+
+    /// Obtener metadata de una carpeta
+    pub fn get_folder(&self, folder_path: &str) -> Result<Option<FolderMetadata>> {
+        let result = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id, path, icon, color, order_index, created_at, updated_at
+                FROM folders WHERE path = ?1
+                "#,
+                params![folder_path],
+                |row| {
+                    Ok(FolderMetadata {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        icon: row.get(2)?,
+                        color: row.get(3)?,
+                        order_index: row.get(4)?,
+                        created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
+                        updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// Listar todas las carpetas con sus iconos
+    pub fn list_folders_with_icons(&self) -> Result<Vec<FolderMetadata>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, icon, color, order_index, created_at, updated_at
+             FROM folders ORDER BY order_index, path",
+        )?;
+
+        let folders = stmt
+            .query_map([], |row| {
+                Ok(FolderMetadata {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    icon: row.get(2)?,
+                    color: row.get(3)?,
+                    order_index: row.get(4)?,
+                    created_at: DateTime::from_timestamp(row.get(5)?, 0).unwrap(),
+                    updated_at: DateTime::from_timestamp(row.get(6)?, 0).unwrap(),
+                })
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(folders)
+    }
+
+    /// Obtener un mapa rápido de path -> icono para todas las carpetas
+    pub fn get_all_folder_icons(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, icon FROM folders WHERE icon IS NOT NULL")?;
+
+        let icons = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let icon: String = row.get(1)?;
+                Ok((path, icon))
+            })?
+            .collect::<SqliteResult<std::collections::HashMap<_, _>>>()?;
+
+        Ok(icons)
+    }
+
+    /// Obtener un mapa rápido de nombre -> icono para todas las notas con iconos personalizados
+    pub fn get_all_note_icons(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, icon FROM notes WHERE icon IS NOT NULL")?;
+
+        let icons = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let icon: String = row.get(1)?;
+                Ok((name, icon))
+            })?
+            .collect::<SqliteResult<std::collections::HashMap<_, _>>>()?;
+
+        Ok(icons)
+    }
+
+    /// Establecer el color del icono de una nota
+    pub fn set_note_icon_color(&self, note_name: &str, color: Option<&str>) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let rows = self.conn.execute(
+            "UPDATE notes SET icon_color = ?1, updated_at = ?2 WHERE name = ?3",
+            params![color, now, note_name],
+        )?;
+
+        if rows == 0 {
+            return Err(DatabaseError::NoteNotFound(note_name.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Establecer el color del icono de una carpeta
+    pub fn set_folder_icon_color(&self, folder_path: &str, color: Option<&str>) -> Result<()> {
+        let now = Utc::now().timestamp();
+
+        self.conn.execute(
+            r#"
+            INSERT INTO folders (path, icon_color, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(path) DO UPDATE SET
+                icon_color = excluded.icon_color,
+                updated_at = excluded.updated_at
+            "#,
+            params![folder_path, color, now, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// Obtener un mapa de nombre -> (icono, color) para todas las notas con iconos
+    pub fn get_all_note_icons_with_colors(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (String, Option<String>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, icon, icon_color FROM notes WHERE icon IS NOT NULL")?;
+
+        let icons = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let icon: String = row.get(1)?;
+                let color: Option<String> = row.get(2)?;
+                Ok((name, (icon, color)))
+            })?
+            .collect::<SqliteResult<std::collections::HashMap<_, _>>>()?;
+
+        Ok(icons)
+    }
+
+    /// Obtener un mapa de path -> (icono, color) para todas las carpetas con iconos
+    pub fn get_all_folder_icons_with_colors(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (String, Option<String>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, icon, icon_color FROM folders WHERE icon IS NOT NULL")?;
+
+        let icons = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let icon: String = row.get(1)?;
+                let color: Option<String> = row.get(2)?;
+                Ok((path, (icon, color)))
+            })?
+            .collect::<SqliteResult<std::collections::HashMap<_, _>>>()?;
+
+        Ok(icons)
     }
 }
 
