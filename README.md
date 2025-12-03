@@ -20,18 +20,17 @@ A modern note-taking app built for Linux with Vim-like editing, AI chat, MCP aut
 
 <div align="center">
 
-### Full Demo
+### Editor & Notes
+![General View](screenshots/Imagen1%20_General.png)
 
-https://github.com/k4ditano/notnative-app/raw/master/screenshots/screensaver.mp4
+### Databases with Inline Properties
+![Databases](screenshots/Imagen2_Bds.png)
 
-### YouTube Integration & Transcripts
-![YouTube Integration](screenshots/youtube-transcript.png)
+### QuickNote - Floating Desktop Note
+![QuickNote](screenshots/Imagen3_quicknote.png)
 
-### Interactive TODO Lists
-![TODO Lists](screenshots/todo-checkboxes.png)
-
-### Built-in Music Player
-![Music Player](screenshots/music-player.png)
+### AI Chat Integration
+![AI Chat](screenshots/Imagen4_AI.png)
 
 </div>
 
@@ -39,9 +38,13 @@ https://github.com/k4ditano/notnative-app/raw/master/screenshots/screensaver.mp4
 
 ## ✨ Why NotNative?
 
+**📝 QuickNote** - Floating note on your desktop. Capture ideas instantly from anywhere.
+
 **🚀 Blazingly Fast** - Built with Rust. O(log n) editing operations. No lag, ever.
 
 **⌨️ Keyboard First** - Vim-inspired commands. Modal editing. 100+ shortcuts.
+
+**🗄️ Databases** - Create Notion-style databases with custom properties, views, and formulas.
 
 **🤖 AI-Powered** - Chat with your notes. Ask questions. Get summaries. Create content.
 
@@ -81,6 +84,12 @@ sudo ./install.sh
 
 ## 💡 Features
 
+### 📝 QuickNote (v0.2)
+- **Floating desktop note** - Press a hotkey, write instantly
+- **Always accessible** - Capture ideas without switching windows
+- **Auto-save** - Notes are saved automatically
+- **Minimal UI** - Clean, distraction-free floating window
+
 ### 📝 Smart Editor
 - **Vim-inspired modal editing** - Normal, Insert, Visual, Command modes
 - **WebView HTML preview** - Beautiful Obsidian-style rendering in Normal mode (v0.1.2)
@@ -102,6 +111,22 @@ sudo ./install.sh
 - **Context-aware** - Attach notes as context for better answers
 - **Smart suggestions** - AI helps you write better
 - **40+ MCP tools available** - Advanced automation capabilities
+
+### 🗄️ Databases (v0.2)
+- **Notion-style databases** - Create structured views of your notes
+- **Custom properties** - Text, number, date, select, multi-select, checkbox
+- **Table view** - Spreadsheet-like interface with sorting and filtering
+- **Graph view** - Visualize relationships between notes
+- **Excel-like formulas** - Calculate values with `=SUM()`, `=AVERAGE()`, etc.
+- **Bidirectional editing** - Edit in table or note, changes sync automatically
+
+### 📋 Inline Properties (v0.2)
+- **YAML-like syntax in notes** - Define properties anywhere with `property:: value`
+- **Related properties** - Group related data with `[prop1::value1, prop2::value2]`
+- **Auto-detection** - Properties are automatically indexed for databases
+- **Rich types** - Numbers, dates, checkboxes `[x]`, tags, and more
+- **Database integration** - Properties appear as columns in your database views
+- **Live sync** - Edit in note or database, both stay in sync
 
 ### 🔌 Automation & API
 - **MCP Server included** - REST API on port 8788
@@ -192,6 +217,7 @@ curl -X POST http://localhost:8788/mcp/call_tool \
 
 ## 📚 Documentation
 
+- **[📋 Inline Properties](docs/INLINE_PROPERTIES.md)** - Define properties in your notes
 - **[ cURL Examples](docs/CURL_EXAMPLES.md)** - Ready-to-use command examples
 - **[🔌 MCP Integration Guide](docs/MCP_INTEGRATION.md)** - Complete API reference
 - **[🛠️ MCP Tools Reference](docs/MCP_TOOLS_REFERENCE.md)** - Full list of 40+ available tools
@@ -228,6 +254,12 @@ curl -X POST http://localhost:8788/mcp/call_tool \
 - [x] WebView HTML preview (v0.1.2)
 - [x] Keyboard scroll in preview (v0.1.2)
 - [x] Centered content layout (v0.1.2)
+- [x] **Databases with properties and views (v0.2)**
+- [x] **Inline properties with `property:: value` syntax (v0.2)**
+- [x] **Excel-like formulas in databases (v0.2)**
+- [x] **Graph view for note relationships (v0.2)**
+- [x] **Note history and restore (v0.2)**
+- [x] **QuickNote floating window (v0.2)**
 - [ ] Mobile app (planned)
 - [ ] End-to-end encryption (planned)
 - [ ] Cloud sync (planned)

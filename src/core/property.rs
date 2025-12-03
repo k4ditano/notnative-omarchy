@@ -128,14 +128,58 @@ impl PropertyValue {
                 }
             }
             PropertyValue::Checkbox(b) => if *b { "✓" } else { "✗" }.to_string(),
-            PropertyValue::Date(d) => d.clone(),
-            PropertyValue::DateTime(dt) => dt.clone(),
+            PropertyValue::Date(d) => Self::format_date_friendly(d),
+            PropertyValue::DateTime(dt) => Self::format_datetime_friendly(dt),
             PropertyValue::List(items) => items.join(", "),
             PropertyValue::Tags(tags) => tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "),
             PropertyValue::Links(links) => links.iter().map(|l| format!("[[{}]]", l)).collect::<Vec<_>>().join(", "),
             PropertyValue::Link(note) => format!("@{}", note),
             PropertyValue::Null => "—".to_string(),
         }
+    }
+    
+    /// Formatear fecha de forma amigable
+    fn format_date_friendly(date_str: &str) -> String {
+        // Intentar parsear varios formatos
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            return date.format("%d %b %Y").to_string();
+        }
+        // Si no se puede parsear, devolver original
+        date_str.to_string()
+    }
+    
+    /// Formatear datetime de forma amigable
+    fn format_datetime_friendly(dt_str: &str) -> String {
+        let dt_str = dt_str.trim();
+        
+        // Intentar parsear formato ISO con timezone (2025-12-02T19:30:53+00:00)
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str) {
+            let local = dt.with_timezone(&chrono::Local);
+            return local.format("%d %b %Y, %H:%M").to_string();
+        }
+        
+        // Intentar ISO sin timezone (2025-12-02T19:30:53)
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S") {
+            return dt.format("%d %b %Y, %H:%M").to_string();
+        }
+        
+        // Intentar con milisegundos
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S%.f") {
+            return dt.format("%d %b %Y, %H:%M").to_string();
+        }
+        
+        // Intentar formato simple (2025-12-02 19:30:53)
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S") {
+            return dt.format("%d %b %Y, %H:%M").to_string();
+        }
+        
+        // Intentar formato sin segundos
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M") {
+            return dt.format("%d %b %Y, %H:%M").to_string();
+        }
+        
+        // Si no se puede parsear, devolver original
+        dt_str.to_string()
     }
 
     /// Convertir a valor para ordenamiento

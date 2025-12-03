@@ -3,9 +3,29 @@ use chrono::{
     DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
 };
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::models::{Priority, RepeatPattern};
 use crate::i18n::Language;
+
+// ============================================================================
+// REGEX ESTÁTICOS - Compilados una sola vez para mejor rendimiento
+// ============================================================================
+
+/// Formato V2 español: !!RECORDAR(fecha [prioridad] [repetir=patron], texto)
+static SPANISH_REGEX_V2: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"!!RECORDAR\(([^,]+),\s*(.*?)\)").unwrap()
+});
+
+/// Formato V2 inglés: !!REMIND(date [priority] [repeat=pattern], text)
+static ENGLISH_REGEX_V2: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"!!REMIND\(([^,]+),\s*(.*?)\)").unwrap()
+});
+
+/// Formato Interno (Widget): [REMINDER:params|text]
+static INTERNAL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[REMINDER:(.*?)\|(.*?)\]").unwrap()
+});
 
 /// Resultado del parsing de un recordatorio
 #[derive(Debug, Clone)]
@@ -19,28 +39,11 @@ pub struct ParsedReminder {
 
 /// Parser de recordatorios en markdown
 #[derive(Debug)]
-pub struct ReminderParser {
-    spanish_regex_v2: Regex,
-    english_regex_v2: Regex,
-    internal_regex: Regex,
-}
+pub struct ReminderParser;
 
 impl ReminderParser {
     pub fn new() -> Self {
-        // Formato V2: !!RECORDAR(fecha [prioridad] [repetir=patron], texto)
-        let spanish_regex_v2 = Regex::new(r"!!RECORDAR\(([^,]+),\s*(.*?)\)").unwrap();
-
-        // Formato V2: !!REMIND(date [priority] [repeat=pattern], text)
-        let english_regex_v2 = Regex::new(r"!!REMIND\(([^,]+),\s*(.*?)\)").unwrap();
-
-        // Formato Interno (Widget): [REMINDER:params|text]
-        let internal_regex = Regex::new(r"\[REMINDER:(.*?)\|(.*?)\]").unwrap();
-
-        Self {
-            spanish_regex_v2,
-            english_regex_v2,
-            internal_regex,
-        }
+        Self
     }
 
     /// Extrae todos los recordatorios de un texto
@@ -48,7 +51,7 @@ impl ReminderParser {
         let mut reminders = Vec::new();
 
         // Buscar formato interno (Widget) - Prioridad alta ya que es lo que hay en el buffer en modo Normal
-        for cap in self.internal_regex.captures_iter(text) {
+        for cap in INTERNAL_REGEX.captures_iter(text) {
             let params = cap.get(1).map_or("", |m| m.as_str());
             let title = cap.get(2).map_or("", |m| m.as_str()).trim();
             let original = cap.get(0).map_or("", |m| m.as_str());
@@ -60,7 +63,7 @@ impl ReminderParser {
         }
 
         // Buscar en español (V2)
-        for cap in self.spanish_regex_v2.captures_iter(text) {
+        for cap in SPANISH_REGEX_V2.captures_iter(text) {
             let params = cap.get(1).map_or("", |m| m.as_str());
             let title = cap.get(2).map_or("", |m| m.as_str()).trim();
             let original = cap.get(0).map_or("", |m| m.as_str());
@@ -71,7 +74,7 @@ impl ReminderParser {
         }
 
         // Buscar en inglés (V2)
-        for cap in self.english_regex_v2.captures_iter(text) {
+        for cap in ENGLISH_REGEX_V2.captures_iter(text) {
             let params = cap.get(1).map_or("", |m| m.as_str());
             let title = cap.get(2).map_or("", |m| m.as_str()).trim();
             let original = cap.get(0).map_or("", |m| m.as_str());

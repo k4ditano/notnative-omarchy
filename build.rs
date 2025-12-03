@@ -1,4 +1,10 @@
 fn main() {
+    // Generate build timestamp for runtime verification
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", timestamp);
+    // Rerun if this file changes
+    println!("cargo:rerun-if-changed=build.rs");
+    
     // Ensure libmujs is linked when present so libmpv symbols resolve correctly.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;

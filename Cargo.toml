@@ -1,6 +1,6 @@
 [package]
 name = "notnative-app"
-version = "0.1.15"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -50,6 +50,9 @@ ksni = "0.2"
 # Desktop notifications (opcional, compilar con --features notify)
 notify-rust = { version = "4", optional = true }
 
+# Excel export
+rust_xlsxwriter = "0.80"
+
 # RIG Agent Framework (siempre habilitado)
 rig-core = "0.24"
 rig-sqlite = "0.1.27"
@@ -64,3 +67,4 @@ notify = ["notify-rust"]
 
 [build-dependencies]
 pkg-config = "0.3"
+chrono = "0.4"

@@ -99,6 +99,13 @@ pub struct NotesConfig {
     /// Última versión que el usuario ha visto (para mostrar novedades en actualizaciones)
     #[serde(default)]
     pub last_seen_version: Option<String>,
+    /// Mostrar barra de herramientas de formato en modo INSERT
+    #[serde(default = "default_show_format_toolbar")]
+    pub show_format_toolbar: bool,
+}
+
+fn default_show_format_toolbar() -> bool {
+    true
 }
 
 impl Default for NotesConfig {
@@ -122,6 +129,7 @@ impl NotesConfig {
             embedding_config: EmbeddingConfig::default(),
             onboarding_completed: false,
             last_seen_version: None,
+            show_format_toolbar: default_show_format_toolbar(),
         }
     }
 
@@ -404,5 +412,15 @@ impl NotesConfig {
             None => true, // Primera vez o migración desde versión anterior
             Some(last) => last != current_version,
         }
+    }
+
+    /// Obtiene si la barra de herramientas de formato debe mostrarse
+    pub fn show_format_toolbar(&self) -> bool {
+        self.show_format_toolbar
+    }
+
+    /// Establece si la barra de herramientas de formato debe mostrarse
+    pub fn set_show_format_toolbar(&mut self, show: bool) {
+        self.show_format_toolbar = show;
     }
 }

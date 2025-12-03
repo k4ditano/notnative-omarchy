@@ -5,6 +5,43 @@ All notable changes to NotNative will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-12-03
+
+### Added
+- **🎨 Enhanced Format Toolbar**: Improved INSERT mode formatting toolbar
+  - New formatting options: Underline (`<u>text</u>`), Highlight (`==text==`), Code Block
+  - Sticky toolbar - stays fixed at top when scrolling
+  - Horizontally centered toolbar regardless of window size
+  - Text-based H1, H2, H3 buttons for better clarity
+  - All icons now use standard GTK/Adwaita icons
+
+- **📊 Excel Export for Databases**: Export your databases to .xlsx format
+  - Full formula support in cells
+  - Preserves column formatting
+  - Compatible with Excel, LibreOffice Calc, Google Sheets
+
+- **🔄 Auto-continue Lists**: Smart list continuation in INSERT mode
+  - Pressing Enter on a list item automatically adds the prefix
+  - Supports bullet lists (`-`, `*`), numbered lists (`1.`), and checkboxes (`- [ ]`)
+
+- **🛠️ Build Timestamp**: Runtime verification of compiled code
+  - Shows compilation timestamp at startup for debugging
+
+### Fixed
+- **🎨 Toolbar Icons**: Replaced missing/incorrect icons with standard Adwaita icons
+  - Code inline: `insert-text-symbolic`
+  - Code block: `text-x-generic-symbolic`
+  - Checkbox: `checkbox-checked-symbolic`
+  - Quote: `format-indent-more-symbolic`
+  - Horizontal rule: `view-more-horizontal-symbolic`
+  - Property: `bookmark-new-symbolic`
+
+### Technical
+- base_writer.rs: New module for database write operations
+- formula.rs: Formula parsing and evaluation for database cells
+- xlsx_export.rs: Excel export functionality
+- Improved WebView background color handling to reduce flicker
+
 ## [0.1.15] - 2025-11-30
 
 ### Added

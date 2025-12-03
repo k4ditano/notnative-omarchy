@@ -481,20 +481,25 @@ impl GraphView {
     fn draw(&self, cr: &gtk::cairo::Context, width: i32, height: i32) {
         let state = self.state();
         
-        // Obtener color de texto del tema para las etiquetas
+        // Obtener colores del tema GTK usando lookup_color
         let style_context = self.style_context();
+        
+        // Intentar obtener color de fondo del tema
+        let bg_color = style_context.lookup_color("base")
+            .or_else(|| style_context.lookup_color("theme_bg_color"))
+            .or_else(|| style_context.lookup_color("window_bg_color"));
+        
+        // Obtener color de texto para determinar si es tema oscuro
         let fg_color = style_context.color();
-        
-        // Determinar si es tema oscuro basado en la luminancia del color de texto
         let luminance = fg_color.red() * 0.299 + fg_color.green() * 0.587 + fg_color.blue() * 0.114;
-        let is_dark = luminance > 0.5; // Si el texto es claro, es tema oscuro
+        let is_dark = luminance > 0.5;
         
-        // Colores Catppuccin
-        let (bg_r, bg_g, bg_b) = if is_dark {
-            // Catppuccin Mocha Base: #1e1e2e
+        // Color de fondo - usar el del tema o fallback
+        let (bg_r, bg_g, bg_b) = if let Some(bg) = bg_color {
+            (bg.red() as f64, bg.green() as f64, bg.blue() as f64)
+        } else if is_dark {
             (0x1e as f64 / 255.0, 0x1e as f64 / 255.0, 0x2e as f64 / 255.0)
         } else {
-            // Catppuccin Latte Base: #eff1f5
             (0xef as f64 / 255.0, 0xf1 as f64 / 255.0, 0xf5 as f64 / 255.0)
         };
         
@@ -506,12 +511,15 @@ impl GraphView {
         cr.translate(state.pan_x, state.pan_y);
         cr.scale(state.zoom, state.zoom);
 
-        // Color de aristas - usar Surface2 de Catppuccin
-        let edge_color = if is_dark {
-            // Catppuccin Mocha Surface2: #585b70
+        // Color de aristas - obtener del tema o generar basado en fondo
+        let border_color = style_context.lookup_color("border")
+            .or_else(|| style_context.lookup_color("borders"));
+        
+        let edge_color = if let Some(border) = border_color {
+            (border.red() as f64, border.green() as f64, border.blue() as f64)
+        } else if is_dark {
             (0x58 as f64 / 255.0, 0x5b as f64 / 255.0, 0x70 as f64 / 255.0)
         } else {
-            // Catppuccin Latte Surface2: #acb0be
             (0xac as f64 / 255.0, 0xb0 as f64 / 255.0, 0xbe as f64 / 255.0)
         };
 

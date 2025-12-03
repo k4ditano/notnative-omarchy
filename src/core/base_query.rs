@@ -209,8 +209,9 @@ impl<'a> BaseQueryEngine<'a> {
     }
 
     /// Obtener todas las propiedades únicas encontradas en las notas
+    /// Descubrir propiedades disponibles para el modo Notes (solo propiedades de notas)
     pub fn discover_properties(&self, _source_folder: Option<&str>) -> DbResult<Vec<String>> {
-        // Propiedades built-in siempre presentes
+        // Solo propiedades built-in de notas - NO incluir propiedades inline
         let mut property_names = std::collections::HashSet::new();
         property_names.insert("title".to_string());
         property_names.insert("tags".to_string());
@@ -218,6 +219,18 @@ impl<'a> BaseQueryEngine<'a> {
         property_names.insert("created_at".to_string());
         property_names.insert("updated_at".to_string());
 
+        let mut names: Vec<String> = property_names.into_iter().collect();
+        names.sort();
+        Ok(names)
+    }
+    
+    /// Descubrir propiedades inline para el modo Inline Data
+    pub fn discover_inline_properties(&self) -> DbResult<Vec<String>> {
+        let mut property_names = std::collections::HashSet::new();
+        
+        // _note es especial - referencia a la nota origen
+        property_names.insert("_note".to_string());
+        
         // Descubrir propiedades inline desde la BD
         if let Ok(keys) = self.db.get_all_property_keys() {
             for key in keys {
@@ -288,6 +301,77 @@ impl<'a> BaseQueryEngine<'a> {
             Some(values.iter().sum::<f64>() / values.len() as f64)
         }
     }
+    
+    /// Calcular el valor mínimo de una propiedad numérica
+    pub fn min_property(&self, results: &[NoteWithProperties], property: &str) -> Option<f64> {
+        results
+            .iter()
+            .filter_map(|note| {
+                note.properties.get(property).and_then(|v| {
+                    if let PropertyValue::Number(n) = v {
+                        Some(*n)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .fold(None, |acc, val| {
+                Some(acc.map_or(val, |a: f64| a.min(val)))
+            })
+    }
+    
+    /// Calcular el valor máximo de una propiedad numérica
+    pub fn max_property(&self, results: &[NoteWithProperties], property: &str) -> Option<f64> {
+        results
+            .iter()
+            .filter_map(|note| {
+                note.properties.get(property).and_then(|v| {
+                    if let PropertyValue::Number(n) = v {
+                        Some(*n)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .fold(None, |acc, val| {
+                Some(acc.map_or(val, |a: f64| a.max(val)))
+            })
+    }
+    
+    /// Contar valores no vacíos de una propiedad
+    pub fn count_non_empty(&self, results: &[NoteWithProperties], property: &str) -> usize {
+        results
+            .iter()
+            .filter(|note| {
+                note.properties.get(property)
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+    
+    /// Calcular todas las agregaciones para una propiedad numérica
+    pub fn aggregate_property(&self, results: &[NoteWithProperties], property: &str) -> PropertyAggregation {
+        PropertyAggregation {
+            sum: self.sum_property(results, property),
+            avg: self.avg_property(results, property),
+            min: self.min_property(results, property),
+            max: self.max_property(results, property),
+            count: self.count_non_empty(results, property),
+            total: results.len(),
+        }
+    }
+}
+
+/// Resultado de agregaciones sobre una propiedad
+#[derive(Debug, Clone, Default)]
+pub struct PropertyAggregation {
+    pub sum: f64,
+    pub avg: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub count: usize,
+    pub total: usize,
 }
 
 #[cfg(test)]

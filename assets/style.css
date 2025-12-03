@@ -541,22 +541,22 @@ button.flat:active {
 togglebutton {
   background-color: transparent;
   background-image: none;
-  color: @text;
-  border: 1px solid alpha(@border, 0.3);
+  color: @theme_fg_color;
+  border: 1px solid alpha(@borders, 0.3);
   box-shadow: none;
 }
 
 togglebutton:hover {
-  background-color: alpha(@selected-text, 0.15);
+  background-color: alpha(@theme_fg_color, 0.1);
   background-image: none;
-  border-color: @border;
+  border-color: @borders;
 }
 
 togglebutton:checked {
-  background-color: alpha(@selected-text, 0.25);
+  background-color: alpha(@accent_bg_color, 0.25);
   background-image: none;
-  color: @selected-text;
-  border-color: @selected-text;
+  color: @accent_color;
+  border-color: @accent_bg_color;
 }
 
 /* Tema oscuro específico */
@@ -1514,6 +1514,48 @@ popover.background {
   background-color: alpha(@selected-text, 0.2);
 }
 
+/* === Barra de herramientas de formato (modo INSERT) === */
+.format-toolbar {
+  background-color: alpha(@base, 0.95);
+  border: 1px solid alpha(@border, 0.3);
+  border-radius: 8px;
+  padding: 4px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.format-toolbar button.format-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  margin: 0 1px;
+  border: none;
+  border-radius: 4px;
+  background-color: transparent;
+  color: @text;
+}
+
+.format-toolbar button.format-btn:hover {
+  background-color: alpha(@selected-text, 0.15);
+}
+
+.format-toolbar button.format-btn:active {
+  background-color: alpha(@selected-text, 0.25);
+}
+
+/* Botones de heading con texto (H1, H2, H3) */
+.format-toolbar button.format-btn-heading {
+  font-weight: bold;
+  font-size: 11px;
+  min-width: 24px;
+  padding: 4px 6px;
+}
+
+.format-toolbar separator {
+  min-width: 1px;
+  background-color: alpha(@border, 0.3);
+  margin: 4px 0;
+}
+
 /* Respuesta de IA en búsqueda semántica */
 .semantic-answer-box {
   background-color: alpha(@selected-text, 0.05);
@@ -1883,6 +1925,18 @@ popover.property-completion listbox > row {
   padding: 0;
   margin: 0;
   outline: none;
+  border-radius: 6px;
+  transition: background-color 0.1s ease;
+}
+
+popover.property-completion list > row:hover,
+popover.property-completion listbox > row:hover {
+  background-color: alpha(@accent-color, 0.1);
+}
+
+popover.property-completion list > row.selected,
+popover.property-completion listbox > row.selected {
+  background-color: alpha(@accent-color, 0.25);
 }
 
 popover.property-completion button {
@@ -2023,24 +2077,33 @@ popover.property-completion .property-key {
   border-bottom: 1px solid alpha(@border, 0.15);
 }
 
-.base-view-tab {
+.base-view-tab,
+.base-view-tab label,
+button.base-view-tab,
+button.base-view-tab label {
   background: transparent;
   border: none;
   border-radius: 6px;
   padding: 8px 16px;
   margin-right: 4px;
   font-weight: 500;
-  color: alpha(@text-color, 0.7);
+  color: @theme_fg_color;
 }
 
-.base-view-tab:hover {
-  background-color: alpha(@text-color, 0.08);
-  color: @text-color;
+.base-view-tab:hover,
+.base-view-tab:hover label,
+button.base-view-tab:hover,
+button.base-view-tab:hover label {
+  background-color: alpha(@theme_fg_color, 0.08);
+  color: @theme_fg_color;
 }
 
-.base-view-tab:checked {
-  background-color: alpha(@accent-color, 0.2);
-  color: @accent-color;
+.base-view-tab:checked,
+.base-view-tab:checked label,
+button.base-view-tab:checked,
+button.base-view-tab:checked label {
+  background-color: alpha(@accent_bg_color, 0.2);
+  color: @accent_color;
 }
 
 /* ColumnView - La tabla principal */
@@ -2133,7 +2196,6 @@ columnview > listview > row > cell:last-child {
 .base-cell.row-even {
   background-color: transparent;
 }
-}
 
 /* Barra de estado inferior */
 .base-status-bar {
@@ -2150,16 +2212,16 @@ columnview > listview > row > cell:last-child {
 
 /* Filter chips */
 .base-filter-chip {
-  background-color: alpha(@accent-color, 0.15);
+  background-color: alpha(@theme_fg_color, 0.1);
   border-radius: 16px;
   padding: 4px 12px;
   font-size: 0.85em;
   font-weight: 500;
-  color: @accent-color;
+  color: @theme_fg_color;
 }
 
 .base-filter-chip:hover {
-  background-color: alpha(@accent-color, 0.25);
+  background-color: alpha(@theme_fg_color, 0.15);
 }
 
 /* Toggle de grafo */
@@ -2176,11 +2238,54 @@ columnview > listview > row > cell:last-child {
 .filter-popover,
 .sort-popover,
 .columns-popover,
-.source-type-popover {
+.source-type-popover,
+.formula-row-popover {
   background-color: @base;
   border: 1px solid alpha(@border, 0.3);
   border-radius: 12px;
   padding: 16px;
+}
+
+/* Popover de fórmulas */
+.formula-row-popover .formula-row-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin: 2px 0;
+}
+
+.formula-row-popover .formula-row-item:hover {
+  background-color: alpha(@text-color, 0.06);
+}
+
+/* Popover de columnas mejorado */
+.columns-popover-improved {
+  min-width: 320px;
+}
+
+.columns-popover-improved searchentry {
+  margin-bottom: 8px;
+}
+
+.columns-popover .column-row {
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin: 2px 0;
+}
+
+.columns-popover .column-row:hover {
+  background-color: alpha(@text-color, 0.06);
+}
+
+/* Botones mini para reordenamiento */
+.mini-button {
+  min-width: 18px;
+  min-height: 14px;
+  padding: 0;
+  margin: 0;
+}
+
+.mini-button:disabled {
+  opacity: 0.3;
 }
 
 .columns-popover row,

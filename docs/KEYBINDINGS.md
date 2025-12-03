@@ -66,6 +66,7 @@ Estos atajos funcionan en casi cualquier parte de la aplicación.
 | `Ctrl + F` | Abrir búsqueda global flotante (cierra sidebar) |
 | `Alt + F` | Abrir búsqueda dentro de la nota actual |
 | `Ctrl + Shift + A` | Entrar al modo Chat AI desde cualquier lugar |
+| `Ctrl + Shift + H` | Ver historial de versiones de la nota actual |
 
 ### 🪟 Control Global del Sistema (desde cualquier app)
 

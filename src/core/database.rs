@@ -228,6 +228,39 @@ impl NotesDatabase {
         &self.path
     }
 
+    /// Inicia una transacción para operaciones batch (mejora rendimiento)
+    pub fn begin_transaction(&self) -> Result<()> {
+        self.conn.execute("BEGIN TRANSACTION", [])?;
+        Ok(())
+    }
+
+    /// Confirma una transacción batch
+    pub fn commit_transaction(&self) -> Result<()> {
+        self.conn.execute("COMMIT", [])?;
+        Ok(())
+    }
+
+    /// Revierte una transacción batch
+    pub fn rollback_transaction(&self) -> Result<()> {
+        self.conn.execute("ROLLBACK", [])?;
+        Ok(())
+    }
+
+    /// Verifica si una nota necesita re-indexarse basándose en el timestamp del archivo
+    /// Retorna true si el archivo fue modificado después del último indexado
+    pub fn needs_reindex(&self, path: &str, file_mtime: i64) -> Result<bool> {
+        let db_mtime: Option<i64> = self.conn.query_row(
+            "SELECT updated_at FROM notes WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        ).optional()?;
+
+        match db_mtime {
+            Some(mtime) => Ok(file_mtime > mtime),
+            None => Ok(true), // Nota no existe en DB, necesita indexarse
+        }
+    }
+
     /// Asegurar que existe la tabla de versión
     fn ensure_version_table(&mut self) -> Result<()> {
         self.conn.execute_batch(
@@ -929,7 +962,40 @@ impl NotesDatabase {
         // Sincronizar propiedades inline del contenido
         self.sync_inline_properties(note_id, content)?;
 
+        // Sincronizar tags del contenido (frontmatter + inline #tags)
+        self.sync_note_tags(note_id, content)?;
+
         Ok(note_id)
+    }
+
+    /// Sincronizar tags de una nota (elimina antiguos y añade nuevos)
+    fn sync_note_tags(&self, note_id: i64, content: &str) -> Result<()> {
+        use super::frontmatter::extract_all_tags;
+        
+        // Extraer tags del contenido (frontmatter + inline)
+        let tags = extract_all_tags(content);
+        
+        // Obtener tags actuales de la nota
+        let current_tags: Vec<String> = self.get_note_tags(note_id)?
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        
+        // Tags a eliminar (están en current pero no en tags)
+        for tag in &current_tags {
+            if !tags.iter().any(|t| t.to_lowercase() == tag.to_lowercase()) {
+                let _ = self.remove_tag(note_id, tag);
+            }
+        }
+        
+        // Tags a añadir (están en tags pero no en current)
+        for tag in &tags {
+            if !current_tags.iter().any(|t| t.to_lowercase() == tag.to_lowercase()) {
+                let _ = self.add_tag(note_id, tag);
+            }
+        }
+        
+        Ok(())
     }
 
     /// Sincronizar propiedades inline [campo::valor] de una nota
@@ -1105,6 +1171,269 @@ impl NotesDatabase {
             .map_err(|e| e.into())
     }
 
+    /// Obtener la estructura completa de un registro dado un valor de propiedad.
+    /// Usado para autocompletado: cuando el usuario selecciona "Foreger" para "juego",
+    /// devuelve todas las propiedades que normalmente acompañan a ese registro.
+    /// Ejemplo: get_complete_record_structure("juego", "Foreger") 
+    ///          -> Some(vec![("juego", "Foreger"), ("comprado", ""), ("horas", "")])
+    pub fn get_complete_record_structure(&self, property_key: &str, property_value: &str) -> Result<Option<Vec<(String, String)>>> {
+        // Buscar un registro que tenga este key::value y obtener su estructura completa
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT ip2.property_key, ip2.value_text
+            FROM inline_properties ip1
+            JOIN inline_properties ip2 
+              ON ip1.note_id = ip2.note_id 
+              AND ip1.group_id = ip2.group_id
+            JOIN notes n ON ip1.note_id = n.id
+            WHERE ip1.property_key = ?1
+              AND ip1.value_text = ?2
+              AND ip1.group_id IS NOT NULL
+              AND n.name NOT LIKE '.history/%' 
+              AND n.name NOT LIKE '.trash/%'
+              AND n.path NOT LIKE '%/.history/%'
+              AND n.path NOT LIKE '%/.trash/%'
+            ORDER BY ip2.property_key
+            LIMIT 20
+            "#,
+        )?;
+
+        let rows: Vec<(String, Option<String>)> = stmt
+            .query_map(params![property_key, property_value], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        // Convertir a formato [(key, value)]
+        // Para la propiedad principal, usar el valor dado
+        // Para las demás, usar valor vacío (para que el usuario lo complete)
+        let mut result: Vec<(String, String)> = Vec::new();
+        let mut seen_keys = std::collections::HashSet::new();
+        
+        for (key, value) in rows {
+            if seen_keys.contains(&key) {
+                continue;
+            }
+            seen_keys.insert(key.clone());
+            
+            if key == property_key {
+                result.push((key, property_value.to_string()));
+            } else {
+                // Para otras propiedades, usar cadena vacía (el usuario las completará)
+                result.push((key, value.unwrap_or_default()));
+            }
+        }
+
+        // Asegurar que la propiedad principal esté primero
+        result.sort_by(|a, b| {
+            if a.0 == property_key { std::cmp::Ordering::Less }
+            else if b.0 == property_key { std::cmp::Ordering::Greater }
+            else { a.0.cmp(&b.0) }
+        });
+
+        Ok(Some(result))
+    }
+
+    /// Descubrir columnas relacionadas con una propiedad
+    /// Busca todas las propiedades que co-ocurren con la propiedad dada en grupos
+    /// Ejemplo: si 'precio' aparece junto a 'juego' y 'pelicula' en diferentes grupos,
+    /// devuelve ['juego', 'pelicula', 'horas', ...] 
+    pub fn discover_related_columns(&self, property_key: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT DISTINCT ip2.property_key
+            FROM inline_properties ip1
+            JOIN inline_properties ip2 
+              ON ip1.note_id = ip2.note_id 
+              AND ip1.group_id = ip2.group_id
+            JOIN notes n ON ip1.note_id = n.id
+            WHERE ip1.property_key = ?1
+              AND ip2.property_key != ?1
+              AND ip1.group_id IS NOT NULL
+              AND n.name NOT LIKE '.history/%' 
+              AND n.name NOT LIKE '.trash/%'
+              AND n.path NOT LIKE '%/.history/%'
+              AND n.path NOT LIKE '%/.trash/%'
+            ORDER BY ip2.property_key
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![property_key, property_key], |row| row.get(0))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.into())
+    }
+
+    /// Obtener todos los registros que contienen una propiedad específica
+    /// Devuelve registros completos (con todas sus propiedades) donde aparece la key
+    /// Útil para Bases: filtrar por 'juego' devuelve todos los grupos con juego::X
+    pub fn get_records_by_property(&self, property_key: &str) -> Result<Vec<GroupedRecord>> {
+        // Obtener todos los grupos que contienen la propiedad
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT DISTINCT ip.note_id, ip.group_id, n.name as note_name
+            FROM inline_properties ip
+            JOIN notes n ON ip.note_id = n.id
+            WHERE ip.property_key = ?1
+              AND ip.group_id IS NOT NULL
+              AND n.name NOT LIKE '.history/%' 
+              AND n.name NOT LIKE '.trash/%'
+              AND n.path NOT LIKE '%/.history/%'
+              AND n.path NOT LIKE '%/.trash/%'
+            ORDER BY n.name, ip.group_id
+            "#,
+        )?;
+
+        let groups: Vec<(i64, i64, String)> = stmt
+            .query_map(params![property_key], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut records = Vec::new();
+        for (note_id, group_id, note_name) in groups {
+            let props = self.get_group_properties(note_id, group_id)?;
+            records.push(GroupedRecord {
+                note_id,
+                note_name,
+                group_id,
+                properties: props,
+            });
+        }
+
+        Ok(records)
+    }
+
+    /// Obtener todas las propiedades de un grupo específico
+    /// Devuelve Vec<(property_key, value_text)> ordenadas alfabéticamente
+    pub fn get_group_properties(&self, note_id: i64, group_id: i64) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT property_key, 
+                   COALESCE(value_text, CAST(value_number AS TEXT), 
+                            CASE WHEN value_bool = 1 THEN 'true' WHEN value_bool = 0 THEN 'false' ELSE NULL END,
+                            '') as value
+            FROM inline_properties
+            WHERE note_id = ?1 AND group_id = ?2
+            ORDER BY property_key
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![note_id, group_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.into())
+    }
+
+    /// Obtener todos los grupos que son IDÉNTICOS al grupo especificado
+    /// (tienen exactamente las mismas propiedades con los mismos valores)
+    /// Devuelve Vec<(group_id, char_start, char_end)> ordenados por char_start descendente
+    pub fn get_identical_groups(
+        &self,
+        note_id: i64,
+        group_id: i64,
+    ) -> Result<Vec<(i64, i64, i64)>> {
+        // Primero obtener las propiedades del grupo original
+        let original_props = self.get_group_properties(note_id, group_id)?;
+        
+        if original_props.is_empty() {
+            return Ok(vec![]);
+        }
+        
+        // Crear una "firma" del grupo original (propiedades ordenadas)
+        let original_signature: String = original_props
+            .iter()
+            .map(|(k, v)| format!("{}::{}", k, v))
+            .collect::<Vec<_>>()
+            .join("|");
+        
+        // Obtener todos los grupos de la nota
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT DISTINCT group_id
+            FROM inline_properties
+            WHERE note_id = ?1 AND group_id >= 0
+            "#,
+        )?;
+        
+        let all_groups: Vec<i64> = stmt
+            .query_map(params![note_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        
+        // Filtrar los grupos que tienen la misma firma
+        let mut matching_groups = Vec::new();
+        
+        for gid in all_groups {
+            let group_props = self.get_group_properties(note_id, gid)?;
+            let group_signature: String = group_props
+                .iter()
+                .map(|(k, v)| format!("{}::{}", k, v))
+                .collect::<Vec<_>>()
+                .join("|");
+            
+            if group_signature == original_signature {
+                // Obtener ubicación del grupo
+                if let Some((_, char_start, char_end)) = self.get_group_location(note_id, gid)? {
+                    matching_groups.push((gid, char_start, char_end));
+                }
+            }
+        }
+        
+        // Ordenar por char_start descendente (para procesar de fin a inicio)
+        matching_groups.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        Ok(matching_groups)
+    }
+
+    /// Obtener el valor actual de una propiedad en un grupo específico
+    pub fn get_property_value(&self, note_id: i64, group_id: i64, property_key: &str) -> Result<Option<String>> {
+        let value: Option<String> = self.conn.query_row(
+            r#"
+            SELECT value_text
+            FROM inline_properties
+            WHERE note_id = ?1 AND group_id = ?2 AND property_key = ?3
+            "#,
+            params![note_id, group_id, property_key],
+            |row| row.get(0),
+        ).optional()?;
+
+        Ok(value)
+    }
+
+    /// Obtener la ubicación exacta de un grupo en una nota (para edición)
+    /// Devuelve (line_number, char_start, char_end) del grupo completo
+    pub fn get_group_location(&self, note_id: i64, group_id: i64) -> Result<Option<(i64, i64, i64)>> {
+        let result: Option<(i64, i64, i64)> = self.conn.query_row(
+            r#"
+            SELECT MIN(line_number), MIN(char_start), MAX(char_end)
+            FROM inline_properties
+            WHERE note_id = ?1 AND group_id = ?2
+            "#,
+            params![note_id, group_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+
+        Ok(result)
+    }
+
+    /// Obtener path de la nota por ID
+    pub fn get_note_path_by_id(&self, note_id: i64) -> Result<Option<String>> {
+        let path: Option<String> = self.conn.query_row(
+            "SELECT path FROM notes WHERE id = ?1",
+            params![note_id],
+            |row| row.get(0),
+        ).optional()?;
+
+        Ok(path)
+    }
+
     /// Obtener registros agrupados que contienen un valor específico en cualquier campo
     /// Ejemplo: buscar "Cervantes" en cualquier campo devuelve todos los registros
     /// donde aparece ese valor junto con los demás campos del grupo
@@ -1147,53 +1476,37 @@ impl NotesDatabase {
         Ok(records)
     }
 
-    /// Obtener todas las propiedades de un grupo específico
-    fn get_group_properties(
-        &self,
-        note_id: i64,
-        group_id: i64,
-    ) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT property_key, COALESCE(value_text, CAST(value_number AS TEXT), 
-                   CASE value_bool WHEN 1 THEN 'true' ELSE 'false' END, '')
-            FROM inline_properties
-            WHERE note_id = ?1 AND group_id = ?2
-            ORDER BY char_start
-            "#,
-        )?;
-
-        let rows = stmt.query_map(params![note_id, group_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| e.into())
-    }
-
     /// Obtener todos los registros agrupados de todas las notas
     /// Útil para construir vistas de Base con relaciones
     /// Excluye notas de .history y .trash
+    /// Incluye tanto propiedades agrupadas [a::1, b::2] como individuales [a::1]
+    /// IMPORTANTE: Deduplica registros idénticos dentro de la misma nota
     pub fn get_all_grouped_records(&self) -> Result<Vec<GroupedRecord>> {
-        let mut stmt = self.conn.prepare(
+        let mut records = Vec::new();
+        
+        // 1. Primero obtener propiedades con group_id (agrupadas)
+        // Excluir notas en .history o .trash (por folder, name o path)
+        let mut stmt_grouped = self.conn.prepare(
             r#"
             SELECT DISTINCT ip.note_id, ip.group_id, n.name as note_name
             FROM inline_properties ip
             JOIN notes n ON ip.note_id = n.id
             WHERE ip.group_id IS NOT NULL
+              AND n.name NOT LIKE '.history/%' 
+              AND n.name NOT LIKE '.trash/%'
+              AND n.path NOT LIKE '%/.history/%'
+              AND n.path NOT LIKE '%/.trash/%'
               AND (n.folder IS NULL OR (n.folder NOT LIKE '.history%' AND n.folder NOT LIKE '.trash%'))
-              AND n.name NOT LIKE '.history/%' AND n.name NOT LIKE '.trash/%'
             ORDER BY n.name, ip.group_id
             "#,
         )?;
 
-        let groups: Vec<(i64, i64, String)> = stmt
+        let groups: Vec<(i64, i64, String)> = stmt_grouped
             .query_map([], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let mut records = Vec::new();
         for (note_id, group_id, note_name) in groups {
             let props = self.get_group_properties(note_id, group_id)?;
             records.push(GroupedRecord {
@@ -1203,8 +1516,135 @@ impl NotesDatabase {
                 properties: props,
             });
         }
+        
+        // 2. Ahora obtener propiedades SIN group_id (individuales)
+        // Cada propiedad individual se convierte en un registro separado
+        let mut stmt_individual = self.conn.prepare(
+            r#"
+            SELECT ip.note_id, ip.id, n.name as note_name, ip.property_key,
+                   COALESCE(ip.value_text, CAST(ip.value_number AS TEXT), 
+                   CASE ip.value_bool WHEN 1 THEN 'true' ELSE 'false' END, '') as value
+            FROM inline_properties ip
+            JOIN notes n ON ip.note_id = n.id
+            WHERE ip.group_id IS NULL
+              AND n.name NOT LIKE '.history/%' 
+              AND n.name NOT LIKE '.trash/%'
+              AND n.path NOT LIKE '%/.history/%'
+              AND n.path NOT LIKE '%/.trash/%'
+              AND (n.folder IS NULL OR (n.folder NOT LIKE '.history%' AND n.folder NOT LIKE '.trash%'))
+            ORDER BY n.name, ip.char_start
+            "#,
+        )?;
+        
+        let individual_props: Vec<(i64, i64, String, String, String)> = stmt_individual
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        
+        // Cada propiedad individual es su propio "grupo" (con group_id negativo para diferenciar)
+        for (note_id, prop_id, note_name, key, value) in individual_props {
+            records.push(GroupedRecord {
+                note_id,
+                note_name,
+                group_id: -(prop_id), // ID negativo para propiedades individuales
+                properties: vec![(key, value)],
+            });
+        }
 
-        Ok(records)
+        // 3. Fusionar registros de la misma nota que comparten AL MENOS UNA propiedad
+        // con el mismo valor (excepto propiedades muy comunes como "comprado")
+        // Por ejemplo: [juego::Novalands] y [juego:::Novalands, comprado::Si] 
+        // se fusionan porque ambos tienen juego=Novalands
+        let mut merged_records: Vec<GroupedRecord> = Vec::new();
+        
+        // Agrupar por note_id primero
+        let mut by_note: std::collections::HashMap<i64, Vec<GroupedRecord>> = std::collections::HashMap::new();
+        for record in records {
+            by_note.entry(record.note_id).or_default().push(record);
+        }
+        
+        // Propiedades que NO deberían usarse como clave de fusión (son muy genéricas)
+        let non_key_props: std::collections::HashSet<&str> = ["comprado", "completado", "status", "estado", "leido", "visto"]
+            .iter().cloned().collect();
+        
+        for (_note_id, note_records) in by_note {
+            let mut remaining: Vec<GroupedRecord> = note_records;
+            
+            while !remaining.is_empty() {
+                let mut current = remaining.remove(0);
+                let mut merged_any = true;
+                
+                while merged_any {
+                    merged_any = false;
+                    let mut i = 0;
+                    
+                    while i < remaining.len() {
+                        // Buscar si comparten alguna propiedad "clave" (no genérica) con el mismo valor
+                        let shares_key_prop = current.properties.iter().any(|(ck, cv)| {
+                            // Solo considerar propiedades que no sean genéricas y tengan valor
+                            if non_key_props.contains(ck.to_lowercase().as_str()) || cv.is_empty() {
+                                return false;
+                            }
+                            // Buscar si el otro registro tiene la misma propiedad con el mismo valor
+                            remaining[i].properties.iter().any(|(ok, ov)| {
+                                ck == ok && cv == ov && !ov.is_empty()
+                            })
+                        });
+                        
+                        if shares_key_prop {
+                            // Fusionar
+                            let other = remaining.remove(i);
+                            for (key, value) in other.properties {
+                                let existing_idx = current.properties.iter().position(|(k, _)| k == &key);
+                                match existing_idx {
+                                    Some(idx) => {
+                                        if current.properties[idx].1.is_empty() && !value.is_empty() {
+                                            current.properties[idx].1 = value;
+                                        }
+                                    }
+                                    None => {
+                                        current.properties.push((key, value));
+                                    }
+                                }
+                            }
+                            // Preferir group_id positivo para edición
+                            if current.group_id < 0 && other.group_id >= 0 {
+                                current.group_id = other.group_id;
+                            }
+                            merged_any = true;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                
+                merged_records.push(current);
+            }
+        }
+        
+        // 4. Deduplicar registros completamente idénticos (por si quedaron duplicados exactos)
+        // Usamos hash directo en lugar de format! para mejor rendimiento
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        merged_records.retain(|record| {
+            let mut props_sorted: Vec<_> = record.properties.iter().collect();
+            props_sorted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            
+            // Calcular hash directamente en lugar de serializar a String
+            let mut hasher = DefaultHasher::new();
+            record.note_id.hash(&mut hasher);
+            for (k, v) in &props_sorted {
+                k.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            let key = hasher.finish();
+            seen.insert(key)
+        });
+
+        Ok(merged_records)
     }
 
     /// Actualizar una nota existente
@@ -1252,6 +1692,10 @@ impl NotesDatabase {
             .optional()?;
 
         if let Some((id, path)) = note_data {
+            // Eliminar propiedades inline asociadas
+            self.conn
+                .execute("DELETE FROM inline_properties WHERE note_id = ?1", params![id])?;
+            
             // Eliminar de tabla principal
             self.conn
                 .execute("DELETE FROM notes WHERE id = ?1", params![id])?;
@@ -1300,6 +1744,23 @@ impl NotesDatabase {
         }
 
         Ok(deleted_count)
+    }
+    
+    /// Limpiar propiedades inline huérfanas (cuya nota ya no existe)
+    pub fn cleanup_orphaned_inline_properties(&self) -> Result<usize> {
+        let deleted = self.conn.execute(
+            r#"
+            DELETE FROM inline_properties 
+            WHERE note_id NOT IN (SELECT id FROM notes)
+            "#,
+            [],
+        )?;
+        
+        if deleted > 0 {
+            println!("🧹 Limpiadas {} propiedades inline huérfanas", deleted);
+        }
+        
+        Ok(deleted)
     }
 
     /// Obtener metadata de una nota
@@ -2781,6 +3242,15 @@ impl NotesDatabase {
     /// Eliminar una Base
     pub fn delete_base(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM bases WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+    
+    /// Renombrar una Base
+    pub fn rename_base(&self, id: i64, new_name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE bases SET name = ?1 WHERE id = ?2",
+            params![new_name, id]
+        )?;
         Ok(())
     }
 

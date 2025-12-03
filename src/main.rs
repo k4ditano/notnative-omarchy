@@ -141,6 +141,9 @@ fn load_theme_css() -> (String, bool) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Build timestamp to verify fresh compilation
+    println!("🚀 [BUILD] NotNative compiled at: {} UTC", env!("BUILD_TIMESTAMP"));
+    
     // Single instance detection
     let lock_file_path = "/tmp/notnative.lock";
     let control_file_path = "/tmp/notnative.control";

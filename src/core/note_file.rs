@@ -109,9 +109,15 @@ impl NoteFile {
             .unwrap_or_default()
             .as_secs();
 
-        // Preservar la estructura de carpetas en el nombre del archivo en la papelera
-        // Ej: "Docs VS/nota.md" -> "Docs VS_nota_1234567890.md"
-        let safe_name = self.name.replace('/', "_");
+        // Calcular la ruta relativa completa desde notes_dir
+        // Ej: /home/user/notes/Proyectos/Joyeria/idea.md -> Proyectos_Joyeria_idea
+        let relative_name = self.path
+            .strip_prefix(notes_dir.root())
+            .ok()
+            .and_then(|p| p.with_extension("").to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| self.name.clone());
+        
+        let safe_name = relative_name.replace('/', "_");
         let trash_filename = format!("{}_{}.md", safe_name, timestamp);
         let dest_path = trash_path.join(trash_filename);
 
@@ -135,7 +141,15 @@ impl NoteFile {
             .unwrap_or_default()
             .as_secs();
 
-        let safe_name = self.name.replace('/', "_");
+        // Calcular la ruta relativa completa desde notes_dir
+        // Ej: /home/user/notes/Proyectos/Joyeria/idea.md -> Proyectos/Joyeria/idea
+        let relative_name = self.path
+            .strip_prefix(notes_dir.root())
+            .ok()
+            .and_then(|p| p.with_extension("").to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| self.name.clone());
+        
+        let safe_name = relative_name.replace('/', "_");
         let backup_filename = format!("{}_{}.md", safe_name, timestamp);
         let dest_path = history_path.join(backup_filename);
 

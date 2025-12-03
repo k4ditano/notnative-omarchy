@@ -5,6 +5,223 @@ use thiserror::Error;
 
 use super::property::PropertyValue;
 
+// ============================================================================
+// FORMATO DE CELDAS Y FILAS ESPECIALES (Sistema de Fórmulas)
+// ============================================================================
+
+/// Formato visual de una celda
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CellFormat {
+    /// Número de decimales para números (None = auto)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
+    
+    /// Prefijo (ej: "€", "$")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    
+    /// Sufijo (ej: "%", " kg")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    
+    /// Texto en negrita
+    #[serde(default)]
+    pub bold: bool,
+    
+    /// Color de texto (CSS color)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    
+    /// Color de fondo (CSS color)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+}
+
+impl CellFormat {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn with_decimals(mut self, decimals: u8) -> Self {
+        self.decimals = Some(decimals);
+        self
+    }
+    
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = Some(prefix.into());
+        self
+    }
+    
+    pub fn with_suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+    
+    pub fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+    
+    pub fn with_color(mut self, color: impl Into<String>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+    
+    pub fn with_background(mut self, bg: impl Into<String>) -> Self {
+        self.background = Some(bg.into());
+        self
+    }
+    
+    /// Formatear un valor numérico según el formato
+    pub fn format_number(&self, value: f64) -> String {
+        let mut result = match self.decimals {
+            Some(d) => format!("{:.1$}", value, d as usize),
+            None => {
+                // Auto: quitar decimales innecesarios
+                if value.fract() == 0.0 {
+                    format!("{}", value as i64)
+                } else {
+                    format!("{:.2}", value)
+                }
+            }
+        };
+        
+        if let Some(ref prefix) = self.prefix {
+            result = format!("{}{}", prefix, result);
+        }
+        
+        if let Some(ref suffix) = self.suffix {
+            result = format!("{}{}", result, suffix);
+        }
+        
+        result
+    }
+    
+    /// Generar CSS inline para la celda
+    pub fn to_css(&self) -> String {
+        let mut styles = Vec::new();
+        
+        if self.bold {
+            styles.push("font-weight: bold".to_string());
+        }
+        
+        if let Some(ref color) = self.color {
+            styles.push(format!("color: {}", color));
+        }
+        
+        if let Some(ref bg) = self.background {
+            styles.push(format!("background-color: {}", bg));
+        }
+        
+        styles.join("; ")
+    }
+}
+
+/// Contenido de una celda en una fila especial
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecialCellContent {
+    /// Fórmula (ej: "=SUM(C1:C10)") o texto estático
+    pub content: String,
+    
+    /// Formato de la celda
+    #[serde(default)]
+    pub format: CellFormat,
+}
+
+impl SpecialCellContent {
+    pub fn formula(formula: impl Into<String>) -> Self {
+        Self {
+            content: formula.into(),
+            format: CellFormat::default(),
+        }
+    }
+    
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            content: text.into(),
+            format: CellFormat::default(),
+        }
+    }
+    
+    pub fn with_format(mut self, format: CellFormat) -> Self {
+        self.format = format;
+        self
+    }
+    
+    /// ¿Es una fórmula?
+    pub fn is_formula(&self) -> bool {
+        self.content.starts_with('=')
+    }
+}
+
+/// Una fila especial (fórmulas, totales, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecialRow {
+    /// ID único de la fila
+    pub id: String,
+    
+    /// Etiqueta de la fila (primera columna, ej: "Total", "Promedio")
+    pub label: String,
+    
+    /// Contenido de cada columna (clave = nombre de propiedad/columna)
+    #[serde(default)]
+    pub cells: HashMap<String, SpecialCellContent>,
+    
+    /// Posición: índice de fila después de la cual insertar (0 = inicio)
+    /// None = al final de la tabla
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<usize>,
+    
+    /// CSS class adicional para la fila
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub css_class: Option<String>,
+}
+
+impl SpecialRow {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            cells: HashMap::new(),
+            position: None,
+            css_class: None,
+        }
+    }
+    
+    /// Crear fila de totales al final
+    pub fn totals(label: impl Into<String>) -> Self {
+        Self {
+            id: "totals".to_string(),
+            label: label.into(),
+            cells: HashMap::new(),
+            position: None,
+            css_class: Some("special-row-totals".to_string()),
+        }
+    }
+    
+    /// Añadir contenido a una columna
+    pub fn with_cell(mut self, column: impl Into<String>, content: SpecialCellContent) -> Self {
+        self.cells.insert(column.into(), content);
+        self
+    }
+    
+    /// Añadir fórmula a una columna
+    pub fn with_formula(mut self, column: impl Into<String>, formula: impl Into<String>) -> Self {
+        self.cells.insert(column.into(), SpecialCellContent::formula(formula));
+        self
+    }
+    
+    /// Establecer posición
+    pub fn at_position(mut self, pos: usize) -> Self {
+        self.position = Some(pos);
+        self
+    }
+}
+
+// ============================================================================
+// ERRORES Y TIPOS BASE
+// ============================================================================
+
 #[derive(Debug, Error)]
 pub enum BaseError {
     #[error("YAML parse error: {0}")]
@@ -79,6 +296,11 @@ impl FilterOperator {
             (PropertyValue::Date(d1), PropertyValue::Date(d2)) => d1 == d2,
             (PropertyValue::DateTime(dt1), PropertyValue::DateTime(dt2)) => dt1 == dt2,
             (PropertyValue::Tags(t1), PropertyValue::Tags(t2)) => t1 == t2,
+            // Comparar Tags con Text: verificar si algún tag es igual al texto (sin #)
+            (PropertyValue::Tags(tags), PropertyValue::Text(s)) => {
+                let filter_normalized = s.to_lowercase().trim_start_matches('#').to_string();
+                tags.iter().any(|t| t.to_lowercase() == filter_normalized)
+            },
             (PropertyValue::List(l1), PropertyValue::List(l2)) => l1 == l2,
             (PropertyValue::Null, PropertyValue::Null) => true,
             _ => false,
@@ -91,7 +313,11 @@ impl FilterOperator {
         match property {
             PropertyValue::Text(s) => s.to_lowercase().contains(&filter_str),
             PropertyValue::List(items) => items.iter().any(|i| i.to_lowercase().contains(&filter_str)),
-            PropertyValue::Tags(tags) => tags.iter().any(|t| t.to_lowercase().contains(&filter_str)),
+            PropertyValue::Tags(tags) => {
+                // Para tags, eliminar # del filtro si existe (los tags se guardan sin #)
+                let filter_normalized = filter_str.trim_start_matches('#');
+                tags.iter().any(|t| t.to_lowercase().contains(filter_normalized))
+            },
             PropertyValue::Links(links) => links.iter().any(|l| l.to_lowercase().contains(&filter_str)),
             _ => property.to_display_string().to_lowercase().contains(&filter_str),
         }
@@ -356,6 +582,8 @@ pub enum SourceType {
     Notes,
     /// Registros agrupados de propiedades inline [campo1::val1, campo2::val2]
     GroupedRecords,
+    /// Registros filtrados por una propiedad específica (BD bidireccional)
+    PropertyRecords,
 }
 
 /// Una vista dentro de una Base
@@ -383,6 +611,14 @@ pub struct BaseView {
     /// Propiedad por la cual agrupar (para Board/Gallery)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
+    
+    /// Si la vista es editable (permite modificar datos en las notas)
+    #[serde(default)]
+    pub editable: bool,
+    
+    /// Filas especiales con fórmulas (totales, promedios, etc.)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub special_rows: Vec<SpecialRow>,
 }
 
 impl BaseView {
@@ -398,6 +634,8 @@ impl BaseView {
             ],
             sort: Some(SortConfig::desc("updated_at")),
             group_by: None,
+            editable: false,
+            special_rows: Vec::new(),
         }
     }
 
@@ -431,7 +669,36 @@ impl BaseView {
             ],
             sort: None,
             group_by: None,
+            editable: false,
+            special_rows: Vec::new(),
         }
+    }
+    
+    /// Crear una vista para registros filtrados por propiedad (editable)
+    /// La columna principal es la propiedad de filtro
+    pub fn property_records(name: impl Into<String>, filter_property: &str) -> Self {
+        Self {
+            name: name.into(),
+            view_type: ViewType::Table,
+            filter: FilterGroup::new(vec![]),
+            columns: vec![
+                ColumnConfig::new(filter_property).with_title(&capitalize(filter_property)),
+                ColumnConfig::new("_note").with_title("Note"),
+            ],
+            sort: None,
+            group_by: None,
+            editable: true,
+            special_rows: Vec::new(),
+        }
+    }
+}
+
+/// Capitaliza la primera letra de un string
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
 
@@ -452,6 +719,11 @@ pub struct Base {
     /// Carpeta fuente (opcional - si no, busca en todas las notas)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_folder: Option<String>,
+    
+    /// Propiedad de filtro para SourceType::PropertyRecords
+    /// Ejemplo: "juego" filtra todos los registros que contienen [juego::X]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_property: Option<String>,
     
     /// Vistas disponibles
     pub views: Vec<BaseView>,
@@ -477,6 +749,7 @@ impl Base {
             description: None,
             source_type: SourceType::Notes,
             source_folder: None,
+            filter_property: None,
             views: vec![BaseView::new("Default")],
             active_view: 0,
             created_at: now,
@@ -492,7 +765,26 @@ impl Base {
             description: None,
             source_type: SourceType::GroupedRecords,
             source_folder: None,
+            filter_property: None,
             views: vec![BaseView::grouped_records("Default")],
+            active_view: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+    
+    /// Crear una Base de registros filtrados por propiedad (BD bidireccional)
+    /// Las columnas se descubren automáticamente
+    pub fn property_records(name: impl Into<String>, filter_property: impl Into<String>) -> Self {
+        let now = chrono::Utc::now().timestamp();
+        let filter_prop = filter_property.into();
+        Self {
+            name: name.into(),
+            description: None,
+            source_type: SourceType::PropertyRecords,
+            source_folder: None,
+            filter_property: Some(filter_prop.clone()),
+            views: vec![BaseView::property_records("Default", &filter_prop)],
             active_view: 0,
             created_at: now,
             updated_at: now,

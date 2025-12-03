@@ -9,6 +9,76 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
 use regex::Regex;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+
+// ============================================================================
+// REGEX ESTÁTICOS - Compilados una sola vez para mejor rendimiento
+// ============================================================================
+
+/// Regex para detectar contenido entre corchetes [algo]
+static BRACKET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([^\]]+)\]").unwrap()
+});
+
+/// Regex para parsear pares key::value o key:::value
+static PROP_PAIR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"([^,:\s]+)(:::?)([^,]*)").unwrap()
+});
+
+/// Regex para links internos [[nota]]
+static INTERNAL_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+)\]\]").unwrap()
+});
+
+/// Regex para tags #tag
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(^|[\s\(\[,])#([a-zA-Z][a-zA-Z0-9_-]*)").unwrap()
+});
+
+/// Regex para YouTube watch URLs
+static YOUTUBE_WATCH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})").unwrap()
+});
+
+/// Regex para YouTube short URLs (youtu.be)
+static YOUTUBE_SHORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://youtu\.be/([a-zA-Z0-9_-]{11})").unwrap()
+});
+
+/// Regex para YouTube Shorts
+static YOUTUBE_SHORTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})").unwrap()
+});
+
+/// Regex para recordatorios con emoji
+static REMINDER_EMOJI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^(📅|⏰|🔔)\s*(.+)$").unwrap()
+});
+
+/// Regex para !!RECORDAR/!!REMIND
+static RECORDAR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"!!(?:RECORDAR|REMIND)\(([^,]+),\s*([^)]+)\)").unwrap()
+});
+
+/// Regex para checkboxes deshabilitados en HTML
+static CHECKBOX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<input\s+[^>]*(?:type\s*=\s*["']checkbox["'][^>]*disabled|disabled[^>]*type\s*=\s*["']checkbox["'])[^>]*/?\s*>"#).unwrap()
+});
+
+/// Regex para links internos en HTML
+static INTERNAL_LINK_HTML_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<a href="notnative://note/([^"]+)">([^<]+)</a>"#).unwrap()
+});
+
+/// Regex para links de tags en HTML
+static TAG_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<a href="notnative://tag/([^"]+)">([^<]+)</a>"#).unwrap()
+});
+
+/// Regex para imágenes en HTML
+static IMG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<img src="([^"]+)""#).unwrap()
+});
 
 /// Decodifica una cadena URL-encoded (percent-encoded)
 fn url_decode(s: &str) -> String {
@@ -79,10 +149,40 @@ impl Default for PreviewTheme {
     }
 }
 
+/// Colores dinámicos para el preview (extraídos del tema GTK)
+#[derive(Debug, Clone)]
+pub struct PreviewColors {
+    pub bg_primary: String,
+    pub bg_secondary: String,
+    pub bg_tertiary: String,
+    pub fg_primary: String,
+    pub fg_secondary: String,
+    pub fg_muted: String,
+    pub accent: String,
+    pub border: String,
+}
+
+impl Default for PreviewColors {
+    fn default() -> Self {
+        // Colores Catppuccin Mocha por defecto
+        Self {
+            bg_primary: "#1e1e2e".to_string(),
+            bg_secondary: "#313244".to_string(),
+            bg_tertiary: "#45475a".to_string(),
+            fg_primary: "#cdd6f4".to_string(),
+            fg_secondary: "#a6adc8".to_string(),
+            fg_muted: "#6c7086".to_string(),
+            accent: "#89b4fa".to_string(),
+            border: "#45475a".to_string(),
+        }
+    }
+}
+
 /// Renderer de Markdown a HTML
 pub struct HtmlRenderer {
     theme: PreviewTheme,
     base_path: Option<PathBuf>, // Directorio base para resolver rutas relativas de imágenes
+    colors: Option<PreviewColors>, // Colores dinámicos del tema GTK
 }
 
 impl Default for HtmlRenderer {
@@ -96,6 +196,7 @@ impl HtmlRenderer {
         Self {
             theme,
             base_path: None,
+            colors: None,
         }
     }
 
@@ -104,7 +205,22 @@ impl HtmlRenderer {
         Self {
             theme,
             base_path: Some(base_path),
+            colors: None,
         }
+    }
+    
+    /// Crea un renderer con colores dinámicos del tema GTK
+    pub fn with_colors(theme: PreviewTheme, base_path: PathBuf, colors: PreviewColors) -> Self {
+        Self {
+            theme,
+            base_path: Some(base_path),
+            colors: Some(colors),
+        }
+    }
+    
+    /// Establece los colores dinámicos
+    pub fn set_colors(&mut self, colors: PreviewColors) {
+        self.colors = Some(colors);
     }
 
     /// Renderiza Markdown a HTML completo (documento completo con estilos)
@@ -145,12 +261,10 @@ impl HtmlRenderer {
         // Procesar propiedades inline [campo::valor] y [campo:::valor]
         // También soporta grupos: [campo1::val1, campo2:::val2]
         // Procesamos línea por línea para preservar saltos de línea
-        let bracket_re = Regex::new(r"\[([^\]]+)\]").unwrap();
-        
         let processed_lines: Vec<String> = result.lines().map(|line| {
             // Verificar si la línea contiene algo que parece propiedad inline
             if line.contains("::") && line.contains('[') {
-                let processed = bracket_re.replace_all(line, |caps: &regex::Captures| {
+                let processed = BRACKET_RE.replace_all(line, |caps: &regex::Captures| {
                     let content = &caps[1];
                     
                     // Verificar si contiene :: (es una propiedad inline)
@@ -160,11 +274,10 @@ impl HtmlRenderer {
                     }
                     
                     // Procesar cada par key::value o key:::value separado por comas
-                    let prop_re = Regex::new(r"([^,:\s]+)(:::?)([^,]*)").unwrap();
                     let mut html_parts: Vec<String> = Vec::new();
                     let mut has_visible = false;
                     
-                    for prop_cap in prop_re.captures_iter(content) {
+                    for prop_cap in PROP_PAIR_RE.captures_iter(content) {
                         let key = prop_cap.get(1).map(|m| m.as_str()).unwrap_or("");
                         let separator = prop_cap.get(2).map(|m| m.as_str()).unwrap_or("::");
                         let value = prop_cap.get(3).map(|m| m.as_str().trim()).unwrap_or("");
@@ -207,8 +320,7 @@ impl HtmlRenderer {
 
         // Convertir [[nota]] a links especiales (placeholder que post-procesaremos)
         // URL-encode el nombre para manejar espacios y caracteres especiales
-        let internal_link_re = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
-        result = internal_link_re
+        result = INTERNAL_LINK_RE
             .replace_all(&result, |caps: &regex::Captures| {
                 let note_name = &caps[1];
                 let encoded_name = note_name.replace(' ', "%20");
@@ -218,64 +330,57 @@ impl HtmlRenderer {
 
         // Convertir #tags a links clickeables (pero no # de headings)
         // Patrón: # seguido de letras/números/guiones, precedido por espacio o inicio de línea
-        let tag_re = Regex::new(r"(?m)(^|[\s\(\[,])#([a-zA-Z][a-zA-Z0-9_-]*)").unwrap();
-        result = tag_re
+        result = TAG_RE
             .replace_all(&result, r#"$1[#$2](notnative://tag/$2)"#)
             .to_string();
 
-        // Convertir tags de frontmatter YAML (formato: "  - tagname" o "  • tagname")
-        // Solo dentro de bloques que empiecen con "tags:"
-        let frontmatter_tag_re =
-            Regex::new(r"(?m)^(\s*[-•]\s+)([a-zA-ZáéíóúñÁÉÍÓÚÑ][a-zA-Z0-9áéíóúñÁÉÍÓÚÑ_-]*)$")
-                .unwrap();
-        result = frontmatter_tag_re
+        // NOTA: Ya no convertimos items de lista (- palabra) a tags automáticamente
+        // Los tags deben tener # explícito: #tag
+
+        // Embeber videos de YouTube como iframes usando regex estáticos
+        // YouTube watch URLs
+        result = YOUTUBE_WATCH_RE
             .replace_all(&result, |caps: &regex::Captures| {
-                let prefix = &caps[1];
-                let tag_name = &caps[2];
-                format!("{}[{}](notnative://tag/{})", prefix, tag_name, tag_name)
+                let video_id = &caps[1];
+                format!(
+                    r#"<div class="youtube-embed"><iframe src="https://www.youtube.com/embed/{}" frameborder="0" allowfullscreen></iframe></div>"#,
+                    video_id
+                )
             })
             .to_string();
-
-        // Embeber videos de YouTube como iframes
-        // Detectar URLs de YouTube y convertirlas a embeds
-        // Patrón: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID
-        let youtube_patterns = [
-            (
-                r"https?://(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})",
-                "watch",
-            ),
-            (r"https?://youtu\.be/([a-zA-Z0-9_-]{11})", "short"),
-            (
-                r"https?://(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})",
-                "shorts",
-            ),
-        ];
-
-        for (pattern, _) in youtube_patterns.iter() {
-            let re = Regex::new(pattern).unwrap();
-            result = re
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let video_id = &caps[1];
-                    format!(
-                        r#"<div class="youtube-embed"><iframe src="https://www.youtube.com/embed/{}" frameborder="0" allowfullscreen></iframe></div>"#,
-                        video_id
-                    )
-                })
-                .to_string();
-        }
+        
+        // YouTube short URLs (youtu.be)
+        result = YOUTUBE_SHORT_RE
+            .replace_all(&result, |caps: &regex::Captures| {
+                let video_id = &caps[1];
+                format!(
+                    r#"<div class="youtube-embed"><iframe src="https://www.youtube.com/embed/{}" frameborder="0" allowfullscreen></iframe></div>"#,
+                    video_id
+                )
+            })
+            .to_string();
+        
+        // YouTube Shorts
+        result = YOUTUBE_SHORTS_RE
+            .replace_all(&result, |caps: &regex::Captures| {
+                let video_id = &caps[1];
+                format!(
+                    r#"<div class="youtube-embed"><iframe src="https://www.youtube.com/embed/{}" frameborder="0" allowfullscreen></iframe></div>"#,
+                    video_id
+                )
+            })
+            .to_string();
 
         // Convertir recordatorios con formato especial
         // Detectar patrones como: 📅 2025-01-15 10:00 - Recordatorio texto
         // o: ⏰ mañana 9:00 - Recordatorio texto
-        let reminder_re = Regex::new(r"(?m)^(📅|⏰|🔔)\s*(.+)$").unwrap();
-        result = reminder_re
+        result = REMINDER_EMOJI_RE
             .replace_all(&result, r#"<span class="reminder">$1 $2</span>"#)
             .to_string();
 
         // Convertir recordatorios con formato !!RECORDAR(fecha prioridad repeat, texto) o !!REMIND(...)
         // Formato V2: !!RECORDAR(2025-11-28 10:00 medium repeat=daily, Texto del recordatorio)
-        let recordar_re = Regex::new(r"!!(?:RECORDAR|REMIND)\(([^,]+),\s*([^)]+)\)").unwrap();
-        result = recordar_re
+        result = RECORDAR_RE
             .replace_all(&result, |caps: &regex::Captures| {
                 let params = caps[1].trim();
                 let text = caps[2].trim();
@@ -373,20 +478,12 @@ impl HtmlRenderer {
         let mut result = html.to_string();
 
         // Añadir data-line a los checkboxes de tareas y hacerlos interactivos
-        // pulldown-cmark puede generar varios formatos:
-        // - <input type="checkbox" disabled="" />
-        // - <input type="checkbox" disabled="" checked="" />
-        // - <input disabled="" type="checkbox" />
-        // - <input type="checkbox" disabled />
-        // - <input type="checkbox" disabled="" /> (con o sin checked)
-        // Usamos un regex muy flexible que captura cualquier <input> con checkbox Y disabled
-        let checkbox_re =
-            Regex::new(r#"<input\s+[^>]*(?:type\s*=\s*["']checkbox["'][^>]*disabled|disabled[^>]*type\s*=\s*["']checkbox["'])[^>]*/?\s*>"#).unwrap();
+        // pulldown-cmark puede generar varios formatos - usamos CHECKBOX_RE estático
 
         let mut line_counter = 0;
 
         // Reemplazar todos los checkboxes deshabilitados con versiones interactivas
-        result = checkbox_re
+        result = CHECKBOX_RE
             .replace_all(&result, |caps: &regex::Captures| {
                 line_counter += 1;
                 let original = caps.get(0).map(|m| m.as_str()).unwrap_or("");
@@ -401,9 +498,7 @@ impl HtmlRenderer {
 
         // Convertir links internos notnative://note/nombre a clickeables
         // El note_name puede venir URL-encoded (ej: My%20Note), hay que decodificarlo
-        let internal_link_re =
-            Regex::new(r#"<a href="notnative://note/([^"]+)">([^<]+)</a>"#).unwrap();
-        result = internal_link_re
+        result = INTERNAL_LINK_HTML_RE
             .replace_all(&result, |caps: &regex::Captures| {
                 let note_name_encoded = &caps[1];
                 let note_name = url_decode(note_name_encoded);
@@ -417,8 +512,7 @@ impl HtmlRenderer {
 
         // Convertir links de tags notnative://tag/nombre a clickeables
         // El tag_name puede venir URL-encoded (ej: programaci%C3%B3n), hay que decodificarlo
-        let tag_link_re = Regex::new(r#"<a href="notnative://tag/([^"]+)">([^<]+)</a>"#).unwrap();
-        result = tag_link_re
+        result = TAG_LINK_RE
             .replace_all(&result, |caps: &regex::Captures| {
                 let tag_name_encoded = &caps[1];
                 let tag_name = url_decode(tag_name_encoded);
@@ -432,8 +526,7 @@ impl HtmlRenderer {
 
         // Convertir rutas de imágenes locales a file:// URLs
         // Detectar <img src="path"> donde path no empieza con http:// o https://
-        let img_re = Regex::new(r#"<img src="([^"]+)""#).unwrap();
-        result = img_re
+        result = IMG_RE
             .replace_all(&result, |caps: &regex::Captures| {
                 let src = &caps[1];
                 // Si ya es una URL http/https, dejarla como está
@@ -466,6 +559,10 @@ impl HtmlRenderer {
     fn wrap_in_document(&self, body: &str) -> String {
         let css = self.get_css();
         let js = self.get_javascript();
+        let theme_class = match self.theme {
+            PreviewTheme::Light => "light",
+            PreviewTheme::Dark => "dark",
+        };
 
         format!(
             r#"<!DOCTYPE html>
@@ -485,19 +582,61 @@ impl HtmlRenderer {
 </body>
 </html>"#,
             css = css,
-            theme_class = match self.theme {
-                PreviewTheme::Light => "light",
-                PreviewTheme::Dark => "dark",
-            },
             body = body,
-            js = js
+            js = js,
+            theme_class = theme_class
         )
     }
 
     /// Retorna el CSS para el preview
     fn get_css(&self) -> String {
-        r#"
-:root {
+        // Si tenemos colores dinámicos, usarlos
+        if let Some(ref colors) = self.colors {
+            return self.get_dynamic_css(colors);
+        }
+        
+        // Fallback a colores estáticos basados en tema
+        self.get_static_css()
+    }
+    
+    /// CSS con colores dinámicos del tema GTK
+    fn get_dynamic_css(&self, colors: &PreviewColors) -> String {
+        format!(r#"
+:root {{
+    --bg-primary: {bg_primary};
+    --bg-secondary: {bg_secondary};
+    --bg-tertiary: {bg_tertiary};
+    --fg-primary: {fg_primary};
+    --fg-secondary: {fg_secondary};
+    --fg-muted: {fg_muted};
+    --accent: {accent};
+    --accent-hover: {accent};
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --yellow: #f9e2af;
+    --peach: #fab387;
+    --code-bg: {bg_secondary};
+    --border: {border};
+    --link: {accent};
+    --link-internal: {accent};
+}}
+{common_css}"#,
+            bg_primary = colors.bg_primary,
+            bg_secondary = colors.bg_secondary,
+            bg_tertiary = colors.bg_tertiary,
+            fg_primary = colors.fg_primary,
+            fg_secondary = colors.fg_secondary,
+            fg_muted = colors.fg_muted,
+            accent = colors.accent,
+            border = colors.border,
+            common_css = Self::get_common_css(),
+        )
+    }
+    
+    /// CSS con colores estáticos (fallback)
+    fn get_static_css(&self) -> String {
+        format!(r#"
+:root {{
     --bg-primary: #1e1e2e;
     --bg-secondary: #313244;
     --bg-tertiary: #45475a;
@@ -514,9 +653,9 @@ impl HtmlRenderer {
     --border: #45475a;
     --link: #89dceb;
     --link-internal: #cba6f7;
-}
+}}
 
-body.light {
+body.light {{
     --bg-primary: #eff1f5;
     --bg-secondary: #e6e9ef;
     --bg-tertiary: #ccd0da;
@@ -533,9 +672,16 @@ body.light {
     --border: #bcc0cc;
     --link: #209fb5;
     --link-internal: #8839ef;
-}
-
-* {
+}}
+{common_css}"#,
+            common_css = Self::get_common_css(),
+        )
+    }
+    
+    /// CSS común que no depende del tema
+    fn get_common_css() -> &'static str {
+        r#"
+*  {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
@@ -958,7 +1104,6 @@ em {
     background: transparent !important;
 }
 "#
-        .to_string()
     }
 
     /// Retorna el JavaScript para interactividad
