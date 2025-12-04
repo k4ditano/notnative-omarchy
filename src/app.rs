@@ -350,6 +350,10 @@ pub struct MainApp {
     quick_note_window: Rc<RefCell<Option<crate::quick_note::QuickNoteWindow>>>,
     // Barra de herramientas de formato para modo INSERT
     format_toolbar: gtk::Box,
+    // WebView watchdog - ID del timeout para detectar si el WebView no cargó
+    webview_load_watchdog: Rc<RefCell<Option<gtk::glib::SourceId>>>,
+    // Flag para indicar que el WebView completó la carga
+    webview_load_completed: Rc<RefCell<bool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -3348,6 +3352,8 @@ Enjoy taking notes! 📓
             note_memory: Rc::new(RefCell::new(None)),
             quick_note_window: Rc::new(RefCell::new(None)),
             format_toolbar: format_toolbar.clone(),
+            webview_load_watchdog: Rc::new(RefCell::new(None)),
+            webview_load_completed: Rc::new(RefCell::new(true)),
         };
 
         // Guardar el sender en el modelo
@@ -3413,6 +3419,19 @@ Enjoy taking notes! 📓
                     },
                 );
             }
+        }
+        
+        // Configurar handler para detectar cuando el WebView termina de cargar (watchdog)
+        {
+            use webkit6::prelude::WebViewExt;
+            let load_completed = model.webview_load_completed.clone();
+            preview_webview.connect_load_changed(move |_webview, load_event| {
+                use webkit6::LoadEvent;
+                if load_event == LoadEvent::Finished {
+                    *load_completed.borrow_mut() = true;
+                    println!("🌐 WebView: carga completada");
+                }
+            });
         }
 
         // Configurar el widget de respuesta semántica
@@ -6287,11 +6306,17 @@ Enjoy taking notes! 📓
 
                 // Cerrar popover de autocompletado con Escape o al salir de modo INSERT
                 // NOTA: Solo si NO estamos en modo ChatAI (ChatAI tiene su propio handler)
+                // Si ESC cierra un popover visible, NO continuar con el cambio de modo
+                let mut popover_was_closed = false;
+                
                 if current_mode != EditorMode::ChatAI
                     && (key == "Escape"
                         || (current_mode != EditorMode::Insert
                             && self.tag_completion_popup.is_visible()))
                 {
+                    if self.tag_completion_popup.is_visible() && key == "Escape" {
+                        popover_was_closed = true;
+                    }
                     self.tag_completion_popup.popdown();
                     *self.current_tag_prefix.borrow_mut() = None;
                 }
@@ -6303,8 +6328,29 @@ Enjoy taking notes! 📓
                         || (current_mode != EditorMode::Insert
                             && self.note_mention_popup.is_visible()))
                 {
+                    if self.note_mention_popup.is_visible() && key == "Escape" {
+                        popover_was_closed = true;
+                    }
                     self.note_mention_popup.popdown();
                     *self.current_mention_prefix.borrow_mut() = None;
+                }
+                
+                // Cerrar popover de propiedades inline con Escape
+                if current_mode != EditorMode::ChatAI
+                    && key == "Escape"
+                    && self.property_completion_popup.is_visible()
+                {
+                    popover_was_closed = true;
+                    self.property_completion_popup.popdown();
+                    *self.current_property_key.borrow_mut() = None;
+                    *self.current_property_prefix.borrow_mut() = None;
+                }
+                
+                // Si un popover fue cerrado con ESC, no continuar con el cambio de modo
+                // El usuario necesita presionar ESC de nuevo para cambiar de modo
+                if popover_was_closed && current_mode == EditorMode::Insert {
+                    println!("🔑 ESC cerró un popover - permaneciendo en modo Insert");
+                    return;
                 }
 
                 // En modo ChatAI, Escape sale INMEDIATAMENTE (prioridad máxima)
@@ -6403,13 +6449,16 @@ Enjoy taking notes! 📓
                     .trim()
                     .to_string();
 
+                // Si venimos del modo ChatAI, forzar reset completo del estado
+                let was_in_chat = *self.mode.borrow() == EditorMode::ChatAI;
+                
                 if let Err(e) = self.load_note(&clean_name) {
                     eprintln!(
                         "Error cargando nota '{}' (original: '{}'): {}",
                         clean_name, name, e
                     );
                 } else {
-                    // Invalidar cache al cargar nueva nota
+                    // Invalidar cache al cargar nueva nota (SIEMPRE, no solo cuando cambia)
                     *self.cached_source_text.borrow_mut() = None;
                     *self.cached_rendered_text.borrow_mut() = None;
 
@@ -6419,6 +6468,13 @@ Enjoy taking notes! 📓
                     // Si estamos en modo ChatAI, cambiar a Normal para poder editar/ver la nota
                     if *self.mode.borrow() == EditorMode::ChatAI {
                         *self.mode.borrow_mut() = EditorMode::Normal;
+                    }
+                    
+                    // Si veníamos del chat, resetear también el flag de sincronización
+                    // por si quedó en un estado inconsistente
+                    if was_in_chat {
+                        *self.is_syncing_to_gtk.borrow_mut() = false;
+                        println!("🔄 Reset de estado al salir del chat hacia nota");
                     }
 
                     // Sincronizar vista y actualizar UI
@@ -6443,6 +6499,12 @@ Enjoy taking notes! 📓
                         } else {
                             self.text_view.grab_focus();
                         }
+                    }
+                    
+                    // Si veníamos del chat, refrescar también la lista de notas del sidebar
+                    // para asegurar que la UI está actualizada
+                    if was_in_chat {
+                        sender.input(AppMsg::RefreshSidebar);
                     }
                 }
             }
@@ -11692,6 +11754,13 @@ impl MainApp {
                 }
             }
             EditorAction::InsertChar(ch) => {
+                // IMPORTANTE: Sincronizar posición del cursor desde GTK antes de operar
+                let current_mode = *self.mode.borrow();
+                if current_mode == EditorMode::Insert {
+                    let iter = self.text_buffer.iter_at_mark(&self.text_buffer.get_insert());
+                    self.cursor_position = iter.offset() as usize;
+                }
+                
                 // Si hay selección, primero borrarla
                 if has_selection {
                     self.delete_selection();
@@ -11701,6 +11770,14 @@ impl MainApp {
                 self.has_unsaved_changes = true;
             }
             EditorAction::InsertNewline => {
+                // IMPORTANTE: Sincronizar posición del cursor desde GTK antes de operar
+                // El usuario puede haber movido el cursor con mouse/flechas en modo INSERT
+                let current_mode = *self.mode.borrow();
+                if current_mode == EditorMode::Insert {
+                    let iter = self.text_buffer.iter_at_mark(&self.text_buffer.get_insert());
+                    self.cursor_position = iter.offset() as usize;
+                }
+                
                 // Si hay selección, primero borrarla
                 if has_selection {
                     self.delete_selection();
@@ -11744,6 +11821,13 @@ impl MainApp {
                 }
             }
             EditorAction::DeleteCharBefore => {
+                // IMPORTANTE: Sincronizar posición del cursor desde GTK antes de operar
+                let current_mode = *self.mode.borrow();
+                if current_mode == EditorMode::Insert {
+                    let iter = self.text_buffer.iter_at_mark(&self.text_buffer.get_insert());
+                    self.cursor_position = iter.offset() as usize;
+                }
+                
                 if has_selection {
                     // Borrar selección
                     self.delete_selection();
@@ -11756,6 +11840,13 @@ impl MainApp {
                 }
             }
             EditorAction::DeleteCharAfter => {
+                // IMPORTANTE: Sincronizar posición del cursor desde GTK antes de operar
+                let current_mode = *self.mode.borrow();
+                if current_mode == EditorMode::Insert {
+                    let iter = self.text_buffer.iter_at_mark(&self.text_buffer.get_insert());
+                    self.cursor_position = iter.offset() as usize;
+                }
+                
                 if has_selection {
                     // Borrar selección
                     self.delete_selection();
@@ -12196,6 +12287,14 @@ impl MainApp {
 
         // En modo Normal con markdown habilitado, usar WebView para preview HTML
         if current_mode == EditorMode::Normal && self.markdown_enabled {
+            // Cancelar cualquier watchdog anterior
+            if let Some(source_id) = self.webview_load_watchdog.borrow_mut().take() {
+                source_id.remove();
+            }
+            
+            // Marcar que la carga está pendiente
+            *self.webview_load_completed.borrow_mut() = false;
+            
             // Verificar si el texto fuente cambió
             let cached_source = self.cached_source_text.borrow();
             let text_changed = cached_source.as_ref() != Some(&buffer_text);
@@ -12212,10 +12311,35 @@ impl MainApp {
                     "📍 sync_to_view: Modo Normal (WebView), buffer.len={}",
                     self.buffer.len_chars()
                 );
+            } else {
+                // Aunque no cambió el texto, forzar recarga si el WebView podría estar en mal estado
+                self.render_preview_html();
+                println!("📍 sync_to_view: Forzando recarga del WebView (texto sin cambios)");
             }
 
             // Asegurar que el WebView (preview) está visible
             self.editor_stack.set_visible_child_name("preview");
+            
+            // Iniciar watchdog: si el WebView no termina de cargar en 300ms, forzar reload
+            let webview = self.preview_webview.clone();
+            let load_completed = self.webview_load_completed.clone();
+            let watchdog_id = self.webview_load_watchdog.clone();
+            
+            let timeout_id = gtk::glib::timeout_add_local_once(
+                std::time::Duration::from_millis(300),
+                move || {
+                    // Limpiar el ID del watchdog
+                    *watchdog_id.borrow_mut() = None;
+                    
+                    if !*load_completed.borrow() {
+                        println!("⚠️ WebView watchdog: carga no completada, forzando reload");
+                        use webkit6::prelude::WebViewExt;
+                        webview.reload();
+                    }
+                },
+            );
+            
+            *self.webview_load_watchdog.borrow_mut() = Some(timeout_id);
 
             // Solo dar foco si se solicita
             if grab_focus {
